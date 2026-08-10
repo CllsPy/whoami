@@ -198,11 +198,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .player-name span { color: var(--muted-dark); font: 10px var(--mono); text-transform: uppercase; }
 
+.player-score { flex: 0 0 auto; display: flex; align-items: baseline; gap: 4px; color: var(--muted-dark); font: 9px var(--mono); text-transform: uppercase; }
+
+.player-score strong { color: var(--night); font: 17px var(--mono); font-variant-numeric: tabular-nums; }
+
 .status-ring { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid rgba(21, 21, 37, 0.28); border-radius: 50%; color: var(--night); font-size: 11px; }
 
 .player-ready .status-ring { border-color: var(--acid-dark); background: var(--acid); }
 
-.player-away { opacity: 0.48; }
+/* O esmaecimento do ausente vale para os dados da linha, não para o comando do
+   anfitrião: o botão de remover precisa continuar legível (END-05). */
+.player-away .player-avatar, .player-away .player-name, .player-away .player-score, .player-away .status-ring { opacity: 0.48; }
+
+.remove-absent-button { flex: 0 0 auto; padding: 7px 9px; font-size: 9px; }
 
 .panel-footnote { margin: 18px 0 0; color: var(--muted-dark); font: 10px/1.5 var(--mono); }
 
@@ -217,6 +225,51 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .solve-meter { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; padding-bottom: 4px; color: var(--muted); font: 10px/1.35 var(--mono); text-transform: uppercase; }
 
 .solve-meter strong { color: var(--acid); font: 38px var(--mono); }
+
+.game-meters { display: flex; align-items: flex-end; gap: 22px; flex: 0 0 auto; }
+
+.session-meter { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; padding-bottom: 4px; border-left: 1px solid var(--line); padding-left: 22px; color: var(--muted); font: 10px/1.35 var(--mono); text-transform: uppercase; }
+
+.session-meter strong { color: var(--sky); font: 38px var(--mono); font-variant-numeric: tabular-nums; }
+
+/* Comando de encerrar rodada travada: fica no fluxo da coluna principal, então
+   não cobre nem empurra o campo de palpite (END-05). */
+.stalled-round-control { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 26px; border: 1px solid var(--line); padding: 14px 16px; }
+
+.stalled-round-control p { margin: 0; flex: 1 1 200px; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.end-round-button { flex: 0 0 auto; border-color: var(--coral); color: var(--coral); }
+
+.end-round-button:hover { border-color: var(--coral); color: var(--night); background: var(--coral); }
+
+/* Power-up de dica e pedido: tudo no fluxo da coluna principal, pelo mesmo
+   motivo do controle acima — nada de posicionamento fixo, que cobriria o campo
+   de palpite ou o botão do bloco de notas. */
+.hint-powerup, .hint-pending, .hint-answer-request { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 26px; border: 1px solid var(--line); padding: 14px 16px; }
+
+.hint-powerup { border-color: var(--lavender); }
+
+.hint-powerup p, .hint-pending p, .hint-answer-request p { margin: 0; flex: 1 1 200px; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.hint-powerup p strong, .hint-answer-request p strong { color: var(--ink); }
+
+.hint-powerup-count { flex: 0 0 auto; display: grid; place-items: center; width: 34px; height: 34px; color: var(--night); background: var(--lavender); font: 17px var(--mono); font-variant-numeric: tabular-nums; }
+
+.hint-powerup-button, .hint-answer-button { flex: 0 0 auto; border-color: var(--lavender); color: var(--lavender); }
+
+.hint-powerup-button:hover, .hint-answer-button:hover { border-color: var(--lavender); color: var(--night); background: var(--lavender); }
+
+.hint-cancel-button { flex: 0 0 auto; border-color: var(--coral); color: var(--coral); }
+
+.hint-cancel-button:hover { border-color: var(--coral); color: var(--night); background: var(--coral); }
+
+.hint-picker { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px; }
+
+.hint-target-button { border-color: var(--line); color: var(--ink); }
+
+.hint-target-button:hover { border-color: var(--acid); color: var(--night); background: var(--acid); }
+
+.hint-picker-empty { flex: 1 1 100%; }
 
 .ticker { display: flex; align-items: center; gap: 10px; margin-top: 26px; color: var(--muted); font-size: 12px; }
 
@@ -269,22 +322,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .character-info em { color: rgba(21, 21, 37, 0.62); font: 9px var(--mono); font-style: normal; text-transform: uppercase; }
 
-/* Crédito de autor e licença: CC BY e CC BY-SA exigem atribuição, então ele
-   precisa ser legível de fato. Caixa alta e corte numa linha só encurtavam
-   nomes de autor a ponto de não creditar ninguém — daí três linhas (a
-   licença do Comic Vine é um parágrafo de termos, não um rótulo curto
-   como "CC BY 2.0"; ver App.tsx `creditLabel`), caixa normal e um pouco mais
-   de contraste. O texto vem ordenado autor · fonte · licença: o corte do
-   line-clamp cai sempre na licença, nunca no autor. */
-.character-credit { margin: 3px 0 0; overflow: hidden; color: rgba(21, 21, 37, 0.68); font: 9px/1.25 var(--mono); letter-spacing: 0.01em; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; position: relative; z-index: 1; }
-
-.character-credit a, .reveal-credit a { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; }
-
-/* Cartão e crédito cortam overflow (line-clamp, cantoneira decorativa); um
-   outline de 3px com offset padrão vazaria por fora e seria cortado. */
-.character-credit a:focus-visible, .reveal-credit a:focus-visible { outline-offset: 1px; }
-
 .character-solved { filter: saturate(0.65); }
+
+/* HINT-08: o destaque de quem pede dica é um contorno, não um filtro — some
+   junto com o pedido e não se confunde com o `.character-solved` dessaturado. */
+.character-asking { outline: 3px solid var(--lavender); outline-offset: -3px; }
+
+.character-asking .character-status { opacity: 1; color: var(--night); background: var(--lavender); padding: 2px 6px; }
 
 .guess-panel { padding: 27px; transform: rotate(1deg); }
 
@@ -366,6 +410,26 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .rank-label { color: var(--muted-dark); font: 9px var(--mono); text-transform: uppercase; white-space: nowrap; }
 
+.session-standings { margin-top: 18px; border-top: 1px solid var(--paper-line); padding-top: 16px; }
+
+.standings-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted-dark); font: 10px var(--mono); text-transform: uppercase; }
+
+.standings-heading .micro-label { margin: 0; color: var(--muted-dark); }
+
+.standings-list { display: grid; margin-top: 6px; }
+
+.standings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 9px; border-bottom: 1px solid var(--paper-line); padding: 10px 0; }
+
+.standings-row:last-child { border-bottom: 0; }
+
+.standings-name { overflow: hidden; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+
+.standings-name small { color: var(--muted-dark); font: 10px var(--mono); }
+
+.standings-gain { color: var(--muted-dark); font: 9px var(--mono); text-transform: uppercase; white-space: nowrap; }
+
+.standings-total { color: var(--night); font: 18px var(--mono); font-variant-numeric: tabular-nums; }
+
 .reveal-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--paper-line); padding: 11px 0; }
 
 .reveal-avatar { width: 30px; height: 30px; color: var(--night); background: var(--acid); }
@@ -378,11 +442,38 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .reveal-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--display); font-size: 18px; letter-spacing: -0.05em; }
 
-.reveal-credit { overflow: hidden; color: var(--muted-dark); font: 9px/1.25 var(--mono); letter-spacing: 0.01em; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; }
-
 .reveal-row em { max-width: 130px; color: var(--muted-dark); font: 9px var(--mono); font-style: normal; text-align: right; text-transform: uppercase; }
 
 @keyframes blink { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+.notes-dock { position: fixed; right: clamp(17px, 4vw, 34px); bottom: clamp(17px, 4vw, 34px); z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+
+.notes-toggle { align-self: flex-end; width: 52px; height: 52px; border: 0; display: grid; place-items: center; color: var(--night); background: var(--acid); font-size: 22px; line-height: 1; box-shadow: 6px 6px 0 rgba(21, 21, 37, 0.35); transition: transform 180ms ease, background 180ms ease; }
+
+.notes-toggle:hover { transform: translate(-2px, -2px); background: var(--sky); }
+
+.notes-panel { width: min(320px, calc(100vw - 34px)); max-height: min(60vh, 420px); overflow-y: auto; padding: 18px; }
+
+.notes-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+
+.notes-panel-head h2 { margin: 0; font-family: var(--display); font-size: 22px; letter-spacing: -0.05em; line-height: 0.95; }
+
+/* O verde de `.micro-label` é feito para o fundo escuro do jogo e some sobre o
+   papel do card. Mesma correção já aplicada em .panel-heading, .guess-panel-head,
+   .history-heading e .standings-heading. */
+.notes-panel-head .micro-label { margin-bottom: 8px; color: var(--muted-dark); }
+
+.notes-clear { border: 1px solid rgba(21, 21, 37, 0.25); padding: 7px 10px; color: var(--night); background: transparent; font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+
+.notes-clear:hover { color: var(--paper); background: var(--night); }
+
+/* A altura é escrita inline pelo NotesPanel a cada tecla, a partir do
+   scrollHeight. Aqui ficam só os limites: `min-height` é o tamanho de partida,
+   `max-height` é o teto onde o crescimento para e a rolagem assume, e
+   `resize: none` tira a alça do canto — quem dimensiona a caixa é o texto. */
+.notes-textarea { width: 100%; min-height: 150px; max-height: 40vh; overflow-y: auto; margin-top: 9px; border: 1px solid rgba(21, 21, 37, 0.25); padding: 11px 14px; color: var(--night); background: rgba(255, 255, 255, 0.35); font: 14px/1.5 var(--mono); resize: none; outline: none; }
+
+.notes-textarea::placeholder { color: #9690a0; }
 
 @media (max-width: 900px) {
   .home-layout, .lobby-layout, .game-layout { grid-template-columns: minmax(0, 1fr); }
@@ -415,6 +506,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .game-intro-row { align-items: flex-start; flex-direction: column; gap: 18px; }
   .game-intro-row h1 { font-size: clamp(45px, 13vw, 68px); }
   .solve-meter { padding: 0; }
+  .game-meters { gap: 16px; }
+  .session-meter { padding: 0 0 0 16px; }
+  .session-meter strong, .solve-meter strong { font-size: 30px; }
+  .standings-gain { font-size: 8px; }
   .identity-board { grid-template-columns: 1fr; }
   .secret-card { min-height: 220px; }
   .secret-symbol { font-size: 53px; }
@@ -426,6 +521,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .reveal-grid { margin-top: 40px; }
   .reveal-row { grid-template-columns: 30px minmax(0, 1fr); }
   .reveal-row em { grid-column: 2; text-align: left; }
+  /* O botão de enviar palpite fica encostado na direita em telas estreitas, então o bloco desce para a esquerda. */
+  .notes-dock { right: auto; left: 17px; align-items: flex-start; }
+  .notes-toggle { align-self: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -27,6 +27,24 @@ export interface PlayerView {
   rank: number | null;
   character?: CharacterPublic;
   solveMs: number | null;
+  /** Total acumulado da sessão, sempre calculado pelo servidor (SCORE-05). */
+  score: number;
+  /**
+   * Pontos ganhos na rodada corrente. `null` enquanto o jogador não acertou:
+   * distingue "ainda não acertou" de "acertou e levou 0", caso que a fórmula
+   * atual não produz mas que uma mudança de fórmula criaria.
+   */
+  roundPoints: number | null;
+  /**
+   * Power-ups de dica já gastos na rodada. O contrato expõe o usado, e não o
+   * disponível, porque o disponível depende do relógio: ele é derivado dos dois
+   * lados por `availableHintPowerups` de `shared/hints.ts`, a partir de
+   * `roundStartedAt` e `serverNow`. Mandar o disponível congelaria no instante
+   * do broadcast e ficaria errado assim que a rodada cruzasse o marco seguinte.
+   */
+  hintsUsed: number;
+  /** Id do jogador a quem este jogador pediu dica; null sem pedido pendente. */
+  hintRequestTargetId: string | null;
 }
 
 export interface RoomView {
@@ -59,6 +77,26 @@ export interface ReadyInput {
 
 export interface GuessInput {
   text: string;
+}
+
+/**
+ * Único payload do protocolo que identifica um terceiro: todos os outros
+ * eventos agem sobre quem os emite. É o anfitrião tirando da sala alguém que
+ * caiu e não voltou — sem isso, `everyoneReady` nunca fecha e a sala não
+ * consegue começar a rodada seguinte.
+ */
+export interface RemoveAbsentInput {
+  playerId: string;
+}
+
+/** Alvo do pedido de dica: alguém que já acertou nesta rodada (HINT-07). */
+export interface HintRequestInput {
+  targetId: string;
+}
+
+/** Quem pediu a dica, informado pelo alvo ao marcar que respondeu (HINT-10). */
+export interface HintAnswerInput {
+  askerId: string;
 }
 
 export interface RoomActionSuccess {
@@ -122,7 +160,18 @@ export interface ClientToServerEvents {
   'player:ready': (payload: ReadyInput) => void;
   'round:guess': (payload: GuessInput) => void;
   'round:playAgain': () => void;
+  // A rodada só termina sozinha quando todo mundo acerta, então um jogador que
+  // cai antes de descobrir a própria identidade a congela para sempre. Este
+  // comando é a saída manual: o anfitrião encerra a rodada travada e a sala
+  // segue para a próxima sem precisar ser dissolvida.
+  'round:endEarly': () => void;
+  'room:removeAbsent': (payload: RemoveAbsentInput) => void;
   'room:leave': () => void;
+  // Power-up de dica: quem está preso gasta um power-up apontando para alguém
+  // que já acertou, o alvo marca que respondeu, e quem pediu pode desistir.
+  'hint:request': (payload: HintRequestInput) => void;
+  'hint:answer': (payload: HintAnswerInput) => void;
+  'hint:cancel': () => void;
 }
 
 export interface ServerToClientEvents {

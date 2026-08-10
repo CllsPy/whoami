@@ -26,13 +26,22 @@
 - **Date**: 2026-08-04
 - **Status**: active
 
-## Handoff
+### AD-004
+- **Decision**: O crédito de autor, fonte e licença das imagens deixa de ser exibido na interface. Removido do card da rodada (`character-credit`) e da tela de revelação (`reveal-credit`), junto de `creditLabel`, `ComicVineLink` e das regras de estilo correspondentes. Não há seção de créditos substituta.
+- **Reason**: Decisão do dono do projeto por motivo visual — o bloco de três linhas em fonte mono dentro do card pesava demais. A alternativa de manter o crédito só na tela de revelação foi apresentada e recusada.
+- **Trade-off**: Aceito com o risco declarado. As imagens do Wikimedia Commons sob CC BY e CC BY-SA **exigem** atribuição, e os termos da API do Comic Vine exigem link de volta ao site sempre que os dados aparecem na interface. Sem crédito exibido em lugar nenhum, o jogo passa a usar essas imagens fora das condições da licença. Isso também revoga na prática IMG-06 da spec `fotos-personagens` ("WHEN uma imagem aprovada exigir atribuição THEN a interface SHALL exibir autor e licença de forma acessível") — a spec fica desatualizada em relação ao código até que alguém a corrija. Os metadados de autor e licença continuam gravados em `server/character-images.ts`, então repor a exibição é barato se a decisão mudar.
+- **Scope**: `src/App.tsx`, `src/styles.css`, e a spec `.specs/features/fotos-personagens/spec.md` (IMG-06 agora divergente).
+- **Date**: 2026-08-09
+- **Status**: active
 
-- **Feature**: melhorias-jogo (`.specs/features/melhorias-jogo/`) — **concluída**
-- **Phase / Task**: todas as 5 fases e 13 tasks concluídas; 3 rodadas de Verifier; veredito final PASS
-- **Completed**: T1..T13, mais 3 commits de correção (grafia PT-BR, lacunas de POOL/TIME rodada 1, lacunas de POOL-06/TIME-09 rodada 2)
+## Handoff
+- **Feature**: powerup-de-dica (`.specs/features/powerup-de-dica/`) — **concluída**
+- **Phase / Task**: 3 fases, 11 tasks (T1..T11) + 3 correções; 2 rodadas de Verifier; veredito PASS, 8/8 mutantes mortos
+- **Completed**: servidor `1178053`, `bc4c1d8`, `485630b`, `efeddf7`, `164d395`, `77e7f4a`; interface `a49b806`, `44d4ded`, `3b1ec2d`, `3cb1f44`, `d27bc98`; correções `23fea84`, `a369208`, `ce4ad2c`; spec+tasks `c3c0985`
 - **In-progress** (file:line): none
-- **Next step**: nada pendente nesta feature. Follow-up conhecido e fora de escopo: `createGameManager` aceita 1 parâmetro mas o teste passa 2 (`server/game.ts`, `tests/game.integration.test.ts`), e `tests/` não está em nenhum tsconfig — o typecheck nunca cobre os testes.
+- **Next step**: decidir sobre o flake de socket (abaixo). Depois, UAT interativo acumulado e merge da branch `feat/powerup-de-dica` em `main`.
 - **Blockers**: none
 - **Uncommitted files**: none
-- **Branch**: claude/repo-contextualization-yzxld1 (enviada para origin)
+- **Branch**: feat/powerup-de-dica (local, não enviada; parte de `main`)
+- **Decisão de desenho registrada**: a concessão de power-ups é **derivada, nunca agendada** — `shared/hints.ts` é a fonte única dos marcos de 30/40/50 e do teto de 3, e cliente e servidor a chamam. Isso preserva a guarda TIME-09, que assere um único agendador em `server/game.ts`. Qualquer feature futura que dependa de tempo deve seguir o mesmo caminho.
+- **PROBLEMA ABERTO — flake de socket**: `tests/game.integration.test.ts` falha por `Timeout esperando <evento>` de forma intermitente, em testes variados e pré-existentes (já visto em POOL-01/02, SCORE-01, SCORE-06, SCORE-09, END-16 e no teste de privacidade). Chegou a ~1 em 4 execuções durante esta feature e caiu para 0 em 4 na verificação final, sem que nada no código explicasse a diferença — ou seja, está **latente, não resolvido**. A suíte de integração cresceu de 49 para 68 testes contra um Socket.IO real, com `waitForEvent` de timeout fixo em 15s e `testTimeout` de 30s. Com falso vermelho recorrente o gate deixa de distinguir falha real de ruído. Precisa de decisão própria: investigar contenção/paralelismo do vitest, ou aumentar prazos, ou isolar a suíte de integração.

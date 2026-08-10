@@ -5,15 +5,20 @@ import type {
   CreateRoomInput,
   GameErrorPayload,
   GuessInput,
+  HintAnswerInput,
+  HintRequestInput,
   InterServerEvents,
   JoinRoomInput,
   ReadyInput,
+  RemoveAbsentInput,
   RoomActionResult,
   RoomView,
   ServerToClientEvents,
   SocketData,
 } from '../shared/protocol';
+import { availableHintPowerups } from '../shared/hints';
 import { normalizeNickname, normalizeRoomCode, normalizeText } from './normalization';
+import { pointsForRank } from './scoring';
 import { characterMatches, characters, type Character, pickCharacters } from './wordlist';
 
 export const MIN_PLAYERS = 2;
@@ -22,6 +27,16 @@ const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DEFAULT_ROOM_TTL_MINUTES = 30;
 const MAX_GUESS_LENGTH = 100;
+
+/**
+ * Quem manda neste piso é o catálogo, não o gosto por entrada limpa. O acervo
+ * tem "L" (`character-0104`), de uma letra só: com piso 2 esse personagem era
+ * impossível de acertar — o jogador digitava o nome certo e recebia
+ * INVALID_GUESS para sempre, travando a rodada de todo mundo. O teste de
+ * invariante em `tests/wordlist.test.ts` amarra os dois lados, para que um nome
+ * curto novo no catálogo quebre a suíte em vez de virar personagem insolúvel.
+ */
+export const MIN_GUESS_LENGTH = 1;
 
 type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 type GameIo = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -40,6 +55,18 @@ interface PlayerState {
   guesses: string[];
   disconnectedAt: number | null;
   solvedAt: number | null;
+  /** Total acumulado da sessão. Só cresce; nunca é zerado por nova rodada. */
+  score: number;
+  /** Ganho da rodada corrente; null enquanto o jogador não acertou. */
+  roundPoints: number | null;
+  /**
+   * Power-ups de dica gastos na rodada. O servidor guarda só o gasto; o
+   * disponível é derivado do tempo por `availableHintPowerups` no instante em
+   * que o pedido é autorizado (ver shared/hints.ts).
+   */
+  hintsUsed: number;
+  /** Alvo do pedido de dica pendente; null quando não há pedido. */
+  hintRequestTargetId: string | null;
 }
 
 interface RoomState {
@@ -52,6 +79,12 @@ interface RoomState {
   updatedAt: number;
   usedCharacterIds: Set<string>;
   roundStartedAt: number | null;
+  /**
+   * Número de jogadores registrado quando a rodada começou (SCORE-02).
+   * Congelado para toda a rodada: quem sai no meio não muda a escala de
+   * pontos dos acertos seguintes (SCORE-15).
+   */
+  roundPlayerCount: number;
 }
 
 interface SessionAuth {
@@ -77,7 +110,12 @@ export class GameManager {
     socket.on('player:ready', (payload) => this.setReady(socket, payload));
     socket.on('round:guess', (payload) => this.guess(socket, payload));
     socket.on('round:playAgain', () => this.playAgain(socket));
+    socket.on('round:endEarly', () => this.endEarly(socket));
+    socket.on('room:removeAbsent', (payload) => this.removeAbsent(socket, payload));
     socket.on('room:leave', () => this.leave(socket));
+    socket.on('hint:request', (payload) => this.requestHint(socket, payload));
+    socket.on('hint:answer', (payload) => this.answerHint(socket, payload));
+    socket.on('hint:cancel', () => this.cancelHint(socket));
     socket.on('disconnect', () => this.disconnect(socket));
 
     this.resumeFromHandshake(socket);
@@ -115,6 +153,7 @@ export class GameManager {
       updatedAt: Date.now(),
       usedCharacterIds: new Set(),
       roundStartedAt: null,
+      roundPlayerCount: 0,
     };
 
     this.rooms.set(code, room);
@@ -203,8 +242,8 @@ export class GameManager {
     }
 
     const text = String(payload?.text ?? '').trim().slice(0, MAX_GUESS_LENGTH);
-    if (!text || normalizeText(text).length < 2) {
-      this.sendError(socket, 'INVALID_GUESS', 'Digite um palpite com pelo menos 2 caracteres.');
+    if (!text || normalizeText(text).length < MIN_GUESS_LENGTH) {
+      this.sendError(socket, 'INVALID_GUESS', 'Digite um palpite antes de enviar.');
       return;
     }
 
@@ -226,6 +265,24 @@ export class GameManager {
     player.solved = true;
     player.rank = rank;
     player.solvedAt = Date.now();
+    // SCORE-01: os pontos usam o N congelado no início da rodada, não o
+    // tamanho atual da sala. O guard de `player.solved` acima garante que a
+    // soma acontece no máximo uma vez por rodada (SCORE-04).
+    //
+    // Hoje `roundPlayerCount` e `room.players.size` são sempre iguais aqui, e
+    // por isso nenhum teste consegue distinguir as duas leituras: o roster não
+    // encolhe durante `playing`. `players.delete` só acontece em `removePlayer`,
+    // chamado apenas por `leave`, e `leave` durante `playing` dispara
+    // `resetAfterDeparture`, que volta a sala para `lobby` e aborta a rodada;
+    // uma queda de conexão marca `connected: false` sem remover o jogador. Ler o
+    // valor congelado é defesa contra uma mudança futura que permita a rodada
+    // seguir com o roster menor: aí as duas leituras divergem e só esta mantém
+    // a escala de pontos que a rodada começou (SCORE-02, SCORE-15).
+    player.roundPoints = pointsForRank(rank, room.roundPlayerCount);
+    player.score += player.roundPoints;
+    // HINT-22: quem acertou não precisa mais da dica, e o power-up não volta —
+    // devolver o direito a quem já saiu da rodada não teria a quem servir.
+    this.releaseHintRequest(player, false);
     this.touch(room);
 
     socket.emit('guess:result', {
@@ -247,6 +304,176 @@ export class GameManager {
     const everyoneSolved = Array.from(room.players.values()).every((candidate) => candidate.solved);
     if (everyoneSolved) {
       this.finishRound(room);
+    }
+  }
+
+  /**
+   * Saída manual para a rodada travada. `finishRound` só dispara quando todos
+   * acertam, então um jogador que cai antes de descobrir a própria identidade
+   * congela a sala para sempre — não há encerramento por tempo.
+   *
+   * A guarda de travamento (existe alguém desconectado que ainda não acertou) é
+   * o que separa conserto de sabotagem: sem ela o anfitrião poderia cortar uma
+   * rodada saudável e revelar o personagem de quem ainda está jogando. Por isso
+   * a condição é a da própria falha, não "quando o anfitrião quiser".
+   */
+  private endEarly(socket: GameSocket): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    if (room.hostId !== player.id) {
+      this.sendError(socket, 'HOST_ONLY', 'Só quem criou a sala pode encerrar a rodada.');
+      return;
+    }
+    if (room.phase !== 'playing') {
+      this.sendError(socket, 'ROUND_NOT_RUNNING', 'Não há rodada em andamento para encerrar.');
+      return;
+    }
+    const stalled = Array.from(room.players.values()).some((candidate) => !candidate.connected && !candidate.solved);
+    if (!stalled) {
+      this.sendError(socket, 'ROUND_NOT_STUCK', 'A rodada não está travada: todo mundo que falta ainda está na sala.');
+      return;
+    }
+
+    this.finishRound(room);
+  }
+
+  /**
+   * Tira da sala quem caiu e não voltou. Encerrar a rodada travada não bastava:
+   * `everyoneReady` exige `connected && ready` de todos, então o ausente
+   * continuava barrando o início da rodada seguinte — o travamento só andava um
+   * passo, da rodada para o lobby.
+   *
+   * Só alvo desconectado, e só no lobby. As duas restrições existem pelo mesmo
+   * motivo: sem elas isto deixa de ser conserto e vira expulsão. Remover alguém
+   * conectado é moderação de comportamento, decisão de produto que a sala não
+   * tomou; remover durante `playing` cairia em `resetAfterDeparture` e abortaria
+   * a rodada de todo mundo.
+   */
+  private removeAbsent(socket: GameSocket, payload: RemoveAbsentInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    if (room.hostId !== player.id) {
+      this.sendError(socket, 'HOST_ONLY', 'Só quem criou a sala pode remover um jogador ausente.');
+      return;
+    }
+    if (room.phase !== 'lobby') {
+      this.sendError(socket, 'ROOM_NOT_IN_LOBBY', 'Só dá para remover alguém entre as rodadas.');
+      return;
+    }
+    const target = typeof payload?.playerId === 'string' ? room.players.get(payload.playerId) : undefined;
+    if (!target) {
+      this.sendError(socket, 'PLAYER_NOT_FOUND', 'Esse jogador não está mais na sala.');
+      return;
+    }
+    if (target.connected) {
+      this.sendError(socket, 'PLAYER_CONNECTED', 'Esse jogador está conectado — só dá para remover quem caiu.');
+      return;
+    }
+
+    // `removePlayer` é o mesmo caminho da saída pelo botão, então o placar de
+    // sessão do removido é descartado junto do registro (SCORE-09, END-16).
+    this.removePlayer(room, target);
+    this.broadcastRoomState(room);
+  }
+
+  /**
+   * Gasta um power-up de dica apontando para alguém que já acertou (HINT-07).
+   *
+   * O disponível não é armazenado: ele sai de `availableHintPowerups` sobre o
+   * tempo decorrido da rodada, calculado agora. É o que permite conceder
+   * power-up por tempo sem nenhum agendador tocando a rodada — e é também o que
+   * faz HINT-04 sair de graça, porque quem já acertou nunca chega até aqui.
+   */
+  private requestHint(socket: GameSocket, payload: HintRequestInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    if (room.phase !== 'playing' || room.roundStartedAt === null) {
+      this.sendError(socket, 'ROUND_NOT_RUNNING', 'Não há rodada em andamento para pedir dica.');
+      return;
+    }
+    if (player.solved) {
+      this.sendError(socket, 'ALREADY_SOLVED', 'Você já acertou: não precisa mais de dica.');
+      return;
+    }
+    if (player.hintRequestTargetId) {
+      this.sendError(socket, 'HINT_ALREADY_PENDING', 'Você já tem um pedido de dica em aberto.');
+      return;
+    }
+    const someoneSolved = Array.from(room.players.values()).some((candidate) => candidate.solved);
+    if (!someoneSolved) {
+      this.sendError(socket, 'NO_SOLVER_YET', 'Ninguém acertou ainda: não há de quem pedir dica.');
+      return;
+    }
+    const target = typeof payload?.targetId === 'string' ? room.players.get(payload.targetId) : undefined;
+    if (!target || !target.solved || target.id === player.id) {
+      this.sendError(socket, 'INVALID_HINT_TARGET', 'Só dá para pedir dica a quem já acertou.');
+      return;
+    }
+    if (availableHintPowerups(Date.now() - room.roundStartedAt, player.hintsUsed) <= 0) {
+      this.sendError(socket, 'NO_HINT_AVAILABLE', 'Você ainda não tem power-up de dica disponível.');
+      return;
+    }
+
+    player.hintsUsed += 1;
+    player.hintRequestTargetId = target.id;
+    this.touch(room);
+    this.broadcastRoomState(room);
+  }
+
+  /**
+   * O alvo marca que respondeu e encerra o pedido (HINT-10). O power-up não
+   * volta: ele foi gasto no que se propunha a comprar, que é a dica.
+   *
+   * Só o alvo encerra (HINT-19). Sem essa checagem qualquer um poderia apagar o
+   * destaque de qualquer pedido, e o alvo perderia o único aviso de que é com ele.
+   */
+  private answerHint(socket: GameSocket, payload: HintAnswerInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    const asker = typeof payload?.askerId === 'string' ? room.players.get(payload.askerId) : undefined;
+    if (!asker || asker.hintRequestTargetId !== player.id) {
+      this.sendError(socket, 'NOT_HINT_TARGET', 'Esse pedido de dica não é para você.');
+      return;
+    }
+
+    asker.hintRequestTargetId = null;
+    this.touch(room);
+    this.broadcastRoomState(room);
+  }
+
+  /**
+   * Quem pediu desiste, e o power-up volta (HINT-11): escolher a pessoa errada é
+   * erro barato de cometer e caro de não poder desfazer.
+   */
+  private cancelHint(socket: GameSocket): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    if (!player.hintRequestTargetId) return;
+
+    this.releaseHintRequest(player, true);
+    this.touch(room);
+    this.broadcastRoomState(room);
+  }
+
+  /** Encerra o pedido pendente de `player`, devolvendo o power-up ou não (HINT-23). */
+  private releaseHintRequest(player: PlayerState, refund: boolean): void {
+    player.hintRequestTargetId = null;
+    if (refund) player.hintsUsed = Math.max(0, player.hintsUsed - 1);
+  }
+
+  /**
+   * O alvo saiu de cena antes de responder: os pedidos dirigidos a ele caem e o
+   * power-up volta (HINT-20, HINT-21). Perder o direito por queda alheia seria
+   * punir o jogador por algo fora do controle dele.
+   */
+  private releaseHintRequestsTargeting(room: RoomState, targetId: string): void {
+    for (const candidate of room.players.values()) {
+      if (candidate.hintRequestTargetId === targetId) this.releaseHintRequest(candidate, true);
     }
   }
 
@@ -272,6 +499,11 @@ export class GameManager {
       candidate.rank = null;
       candidate.guesses = [];
       candidate.solvedAt = null;
+      // SCORE-06: só o ganho da rodada zera. `score` atravessa a sessão inteira.
+      candidate.roundPoints = null;
+      // HINT-05: o direito de pedir dica é da rodada, não da sessão.
+      candidate.hintsUsed = 0;
+      candidate.hintRequestTargetId = null;
     }
     this.touch(room);
     this.broadcastRoomState(room);
@@ -283,6 +515,7 @@ export class GameManager {
     room.round += 1;
     room.roundStartedAt = Date.now();
     const players = Array.from(room.players.values());
+    room.roundPlayerCount = players.length;
 
     const availableCount = characters.length - room.usedCharacterIds.size;
     if (availableCount < players.length) {
@@ -301,6 +534,10 @@ export class GameManager {
       player.solved = false;
       player.rank = null;
       player.guesses = [];
+      player.roundPoints = null;
+      // HINT-05: cada rodada começa sem power-up gasto e sem pedido pendente.
+      player.hintsUsed = 0;
+      player.hintRequestTargetId = null;
       if (player.character) {
         room.usedCharacterIds.add(player.character.id);
       }
@@ -333,6 +570,7 @@ export class GameManager {
     const context = this.getContext(socket);
     if (!context) return;
     const { room, player } = context;
+    this.releaseHintRequestsTargeting(room, player.id);
     this.removePlayer(room, player);
     socket.leave(room.code);
     socket.data.roomCode = undefined;
@@ -355,6 +593,7 @@ export class GameManager {
     player.connected = false;
     player.socketId = null;
     player.disconnectedAt = Date.now();
+    this.releaseHintRequestsTargeting(room, player.id);
     if (room.hostId === player.id) {
       const replacement = Array.from(room.players.values()).find((candidate) => candidate.connected);
       if (replacement) room.hostId = replacement.id;
@@ -430,6 +669,10 @@ export class GameManager {
           solved: player.solved,
           rank: player.rank,
           solveMs: this.deriveSolveMs(room, player),
+          score: player.score,
+          roundPoints: player.roundPoints,
+          hintsUsed: player.hintsUsed,
+          hintRequestTargetId: player.hintRequestTargetId,
         };
 
         if (player.character && (room.phase === 'finished' || (room.phase === 'playing' && player.id !== viewerId))) {
@@ -492,6 +735,10 @@ export class GameManager {
       guesses: [],
       disconnectedAt: null,
       solvedAt: null,
+      score: 0,
+      roundPoints: null,
+      hintsUsed: 0,
+      hintRequestTargetId: null,
     };
   }
 
@@ -548,6 +795,10 @@ export class GameManager {
       candidate.rank = null;
       candidate.guesses = [];
       candidate.solvedAt = null;
+      candidate.roundPoints = null;
+      // HINT-05: a rodada abortada leva junto os power-ups e os pedidos dela.
+      candidate.hintsUsed = 0;
+      candidate.hintRequestTargetId = null;
     }
     this.touch(room);
   }

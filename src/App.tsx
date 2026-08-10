@@ -8,7 +8,9 @@ import type {
   RoomView,
   RoundFinishedPayload,
 } from '../shared/protocol';
+import { availableHintPowerups } from '../shared/hints';
 import { formatDuration } from '../shared/time';
+import { NotesPanel } from './NotesPanel';
 import { clearSession, readSession, saveSession, serverMayHibernate, socket, wakeServer, type SessionData } from './socket';
 
 type HomeMode = 'create' | 'join';
@@ -31,6 +33,7 @@ function App(): JSX.Element {
   const [lastSolved, setLastSolved] = useState<PlayerSolvedPayload | null>(null);
   const [finalRanking, setFinalRanking] = useState<RoundFinishedPayload['ranking']>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [hintPickerOpen, setHintPickerOpen] = useState(false);
 
   useEffect(() => {
     const session = readSession();
@@ -143,7 +146,22 @@ function App(): JSX.Element {
   const otherPlayers = useMemo(() => room?.players.filter((player) => player.id !== room.you.id) ?? [], [room]);
   const solvedCount = room?.players.filter((player) => player.solved).length ?? 0;
   const isHost = Boolean(room && room.hostId === room.you.id);
+  // END-05/END-06: o comando de encerrar só existe quando a rodada está de fato
+  // travada — alguém desconectado e ainda sem acertar — e só para o anfitrião.
+  // O rótulo não diz quem caiu: a rodada não expõe identidade de desconectado.
+  const roundIsStalled = Boolean(room?.players.some((player) => !player.connected && !player.solved));
   const elapsedMs = useRoundClock(room);
+  // HINT-06: o disponível é derivado do mesmo cálculo do servidor
+  // (`shared/hints.ts`) sobre o relógio dele (AD-003). O bloco só é lido por
+  // quem ainda não acertou, então o tempo decorrido corrente basta.
+  const hintsAvailable = me && elapsedMs !== null ? availableHintPowerups(elapsedMs, me.hintsUsed) : 0;
+  // HINT-07/HINT-14: só quem já acertou tem o que dizer, então só ele entra na
+  // lista de alvos. O servidor recusa o resto; a lista evita o pedido inútil.
+  const hintTargets = useMemo(() => room?.players.filter((player) => player.solved && player.id !== room.you.id) ?? [], [room]);
+  // HINT-09: o comando de responder é de quem foi escolhido, um por pedido
+  // dirigido a ele — dois jogadores podem estar pedindo ao mesmo tempo.
+  const hintAskers = useMemo(() => room?.players.filter((player) => player.hintRequestTargetId === room.you.id) ?? [], [room]);
+  const hintTargetOfMine = useMemo(() => room?.players.find((player) => player.id === me?.hintRequestTargetId) ?? null, [room, me]);
 
   function emitRoomAction(mode: HomeMode, nextNickname: string, code: string): void {
     const handleResult = (result: RoomActionResult): void => {
@@ -232,6 +250,27 @@ function App(): JSX.Element {
 
   function playAgain(): void {
     socket.emit('round:playAgain');
+  }
+
+  function endRoundEarly(): void {
+    socket.emit('round:endEarly');
+  }
+
+  function requestHint(targetId: string): void {
+    socket.emit('hint:request', { targetId });
+    setHintPickerOpen(false);
+  }
+
+  function answerHint(askerId: string): void {
+    socket.emit('hint:answer', { askerId });
+  }
+
+  function cancelHint(): void {
+    socket.emit('hint:cancel');
+  }
+
+  function removeAbsent(playerId: string): void {
+    socket.emit('room:removeAbsent', { playerId });
   }
 
   if (!room) {
@@ -339,7 +378,7 @@ function App(): JSX.Element {
               <span className="panel-mark">{room.round === 0 ? 'R00' : `R${String(room.round).padStart(2, '0')}`}</span>
             </div>
             <div className="player-list">
-              {room.players.map((player) => <PlayerRow key={player.id} player={player} you={player.id === room.you.id} />)}
+              {(room.round === 0 ? room.players : sortBySessionScore(room.players)).map((player) => <PlayerRow key={player.id} player={player} you={player.id === room.you.id} showScore={room.round > 0} onRemove={isHost && !player.connected && player.id !== room.you.id ? () => removeAbsent(player.id) : undefined} />)}
             </div>
             <p className="panel-footnote">O anfitrião muda automaticamente se alguém sair.</p>
           </aside>
@@ -365,6 +404,12 @@ function App(): JSX.Element {
               <div className="ranking-list">
                 {finalRanking.map((player, index) => <div className="ranking-row" key={player.playerId}><span className={`rank-number rank-${index + 1}`}>{player.rank ?? '—'}</span><span className="ranking-name">{player.nickname}{player.playerId === room.you.id ? <small> você</small> : null}</span><span className="rank-time">{player.solveMs === null ? '—' : formatDuration(player.solveMs)}</span><span className="rank-label">{index === 0 ? 'primeiro' : index === 1 ? 'segundo' : index === 2 ? 'terceiro' : 'resolvido'}</span></div>)}
               </div>
+              <div className="session-standings">
+                <div className="standings-heading"><span className="micro-label">Placar da sessão</span><span>rodada {String(room.round).padStart(2, '0')}</span></div>
+                <div className="standings-list">
+                  {sortBySessionScore(room.players).map((player) => <div className="standings-row" key={player.id}><span className="standings-name">{player.nickname}{player.id === room.you.id ? <small> você</small> : null}</span><span className="standings-gain">+{player.roundPoints ?? 0} na rodada</span><strong className="standings-total">{player.score}</strong></div>)}
+                </div>
+              </div>
             </div>
             <div className="reveal-card paper-card">
               <div className="panel-heading"><div><span className="micro-label">A fita completa</span><h2>Quem era quem</h2></div><span className="panel-mark">ALL IN</span></div>
@@ -385,9 +430,37 @@ function App(): JSX.Element {
         <div className="game-main">
           <div className="game-intro-row">
             <div><p className="eyebrow">Rodada {String(room.round).padStart(2, '0')} · olhe para os outros</p><h1 id="game-title">Você vê todo mundo.<br /><span>Menos você.</span></h1></div>
-            <div className="solve-meter"><strong>{solvedCount}</strong><span>de {room.players.length}<br />resolvidos</span></div>
+            <div className="game-meters"><div className="solve-meter"><strong>{solvedCount}</strong><span>de {room.players.length}<br />resolvidos</span></div>{room.round > 1 && me && <div className="session-meter" aria-label={`Seu total na sessão: ${me.score} pontos`}><strong>{me.score}</strong><span>pontos<br />na sessão</span></div>}</div>
           </div>
           {notice && <InlineNotice tone="neutral">{notice}</InlineNotice>}
+          {isHost && roundIsStalled && (
+            <div className="stalled-round-control">
+              <button className="text-button end-round-button" type="button" onClick={endRoundEarly}>Encerrar rodada</button>
+              <p>A rodada não vai fechar sozinha. Encerre para revelar e seguir para a próxima.</p>
+            </div>
+          )}
+          {!me?.solved && hintsAvailable > 0 && (
+            <div className="hint-powerup">
+              <span className="hint-powerup-count" aria-hidden="true">{hintsAvailable}</span>
+              <p><strong>Power-up de dica</strong>{hintsAvailable > 1 ? ` · ${hintsAvailable} disponíveis` : ' · 1 disponível'}<br />A rodada travou. Peça uma dica a quem já descobriu.</p>
+              <button className="text-button hint-powerup-button" type="button" aria-expanded={hintPickerOpen} onClick={() => setHintPickerOpen((open) => !open)}>{hintPickerOpen ? 'Fechar' : 'Pedir dica'}</button>
+              {hintPickerOpen && (hintTargets.length === 0
+                ? <p className="hint-picker-empty">Ninguém descobriu ainda nesta rodada. Sem alguém do outro lado, não há de quem pedir.</p>
+                : <div className="hint-picker" role="group" aria-label="Escolha de quem pedir a dica">{hintTargets.map((player) => <button className="ghost-button hint-target-button" key={player.id} type="button" onClick={() => requestHint(player.id)}>Pedir a {player.nickname}</button>)}</div>)}
+            </div>
+          )}
+          {me?.hintRequestTargetId !== null && me !== null && (
+            <div className="hint-pending">
+              <p>Você pediu dica{hintTargetOfMine ? ` a ${hintTargetOfMine.nickname}` : ''}. Espere a resposta na call.</p>
+              <button className="text-button hint-cancel-button" type="button" onClick={cancelHint}>Cancelar pedido</button>
+            </div>
+          )}
+          {hintAskers.map((asker) => (
+            <div className="hint-answer-request" key={asker.id}>
+              <p><strong>{asker.nickname}</strong> pediu uma dica a você. Ajude na call sem entregar o nome.</p>
+              <button className="text-button hint-answer-button" type="button" onClick={() => answerHint(asker.id)}>Marcar que respondi</button>
+            </div>
+          ))}
           {lastSolved && !me?.solved && <div className="ticker" role="status"><span className="ticker-pulse" aria-hidden="true" />{lastSolved.nickname} acabou de descobrir. A fila anda.</div>}
           <div className="identity-board">
             <div className="secret-card" data-testid="secret-card">
@@ -409,6 +482,7 @@ function App(): JSX.Element {
           <div className="history-block"><div className="history-heading"><span className="micro-label">Seu histórico</span><span>{room.guessHistory.length} palpites</span></div>{room.guessHistory.length === 0 ? <p className="history-empty">Seus palpites aparecem aqui — só para você.</p> : <ol className="guess-history">{room.guessHistory.map((item, index) => <li key={`${item}-${index}`}><span>{String(index + 1).padStart(2, '0')}</span>{item}</li>)}</ol>}</div>
         </aside>
       </section>
+      <NotesPanel roomCode={room.code} round={room.round} />
     </main>
   );
 }
@@ -461,20 +535,34 @@ function RoomHeader({ room, connection, onLeave, elapsedMs }: { room: RoomView; 
   return <header className="topbar room-topbar"><Logo /><div className="room-meta"><span className="room-meta-label">sala</span><strong>{room.code}</strong><span className="room-round">R{String(room.round).padStart(2, '0')}</span>{elapsedMs !== null && <span className="round-clock" aria-label="Tempo decorrido da rodada">{formatDuration(elapsedMs)}</span>}</div><div className="topbar-actions"><ConnectionPill state={connection} /><button className="text-button" type="button" onClick={onLeave}>Sair</button></div></header>;
 }
 
-function PlayerRow({ player, you }: { player: RoomView['players'][number]; you: boolean }): JSX.Element {
-  return <div className={`player-row ${player.ready ? 'player-ready' : ''} ${!player.connected ? 'player-away' : ''}`}><span className="player-avatar">{player.nickname.slice(0, 1).toUpperCase()}</span><div className="player-name"><strong>{player.nickname}{you ? <small> você</small> : null}</strong><span>{player.isHost ? 'anfitrião' : player.connected ? player.ready ? 'pronto' : 'pensando' : 'reconectando'}</span></div><span className="status-ring" aria-label={player.ready ? 'pronto' : 'não pronto'}>{player.ready ? '✓' : ''}</span></div>;
+/**
+ * END-22: `onRemove` só chega preenchido nas linhas que o anfitrião pode
+ * remover — jogador desconectado que não é ele mesmo. Sem callback, sem botão.
+ */
+function PlayerRow({ player, you, showScore, onRemove }: { player: RoomView['players'][number]; you: boolean; showScore: boolean; onRemove?: () => void }): JSX.Element {
+  return <div className={`player-row ${player.ready ? 'player-ready' : ''} ${!player.connected ? 'player-away' : ''}`}><span className="player-avatar">{player.nickname.slice(0, 1).toUpperCase()}</span><div className="player-name"><strong>{player.nickname}{you ? <small> você</small> : null}</strong><span>{player.isHost ? 'anfitrião' : player.connected ? player.ready ? 'pronto' : 'pensando' : 'reconectando'}</span></div>{showScore && <span className="player-score" aria-label={`${player.score} pontos na sessão`}><strong>{player.score}</strong><span>pts</span></span>}{onRemove && <button className="ghost-button remove-absent-button" type="button" onClick={onRemove} aria-label={`Remover ${player.nickname} da sala`}>Remover</button>}<span className="status-ring" aria-label={player.ready ? 'pronto' : 'não pronto'}>{player.ready ? '✓' : ''}</span></div>;
+}
+
+/**
+ * Ordem do placar acumulado (SCORE-14): total decrescente, desempate pelo
+ * apelido em ordem alfabética.
+ */
+function sortBySessionScore(players: RoomView['players']): RoomView['players'] {
+  return [...players].sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname, 'pt-BR'));
 }
 
 function CharacterCard({ player, index }: { player: RoomView['players'][number]; index: number }): JSX.Element {
   const [imageFailed, setImageFailed] = useState(false);
   const image = player.character?.image;
   const showImage = Boolean(image) && !imageFailed;
+  // HINT-08: o destaque diz que este jogador está pedindo dica, e só isso — ele
+  // não muda nada do personagem mostrado no card.
+  const asking = player.hintRequestTargetId !== null;
   return (
-    <article className={`character-card character-color-${index % 4} ${player.solved ? 'character-solved' : ''} ${showImage ? 'character-has-photo' : ''}`}>
-      <div className="character-card-top"><span className="card-number">0{index + 1}</span><span className="character-status">{player.solved ? 'descobriu' : player.connected ? 'na testa' : 'offline'}</span></div>
+    <article className={`character-card character-color-${index % 4} ${player.solved ? 'character-solved' : ''} ${asking ? 'character-asking' : ''} ${showImage ? 'character-has-photo' : ''}`}>
+      <div className="character-card-top"><span className="card-number">0{index + 1}</span><span className="character-status">{asking ? 'pedindo dica' : player.solved ? 'descobriu' : 'na testa'}</span></div>
       {showImage ? <img className="character-photo" src={image!.url} alt={`Foto de ${player.character!.name}`} loading="lazy" onError={() => setImageFailed(true)} /> : <div className="character-avatar" aria-hidden="true">{player.nickname.slice(0, 1).toUpperCase()}</div>}
       <div className="character-info"><strong>{player.nickname}</strong>{player.character ? <><span>{player.character.name}</span><em>{player.character.category}</em></> : <span>personagem reservado</span>}</div>
-      {showImage && <p className="character-credit">{creditLabel(image!)}</p>}
     </article>
   );
 }
@@ -489,46 +577,9 @@ function RevealRow({ player }: { player: RoomView['players'][number] }): JSX.Ele
       <div>
         <strong>{player.nickname}</strong>
         <span>{player.character?.name ?? 'Sem personagem'}</span>
-        {showImage && <small className="reveal-credit">{creditLabel(image!)}</small>}
       </div>
       <em>{player.character?.category ?? '—'}</em>
     </div>
-  );
-}
-
-type ImageCredit = { url: string; author: string; license: string; source: string };
-
-/**
- * Crédito acessível de uma imagem (CARD-04): autor e fonte vêm antes da
- * licença de propósito. A licença do Comic Vine é um parágrafo inteiro de
- * termos de uso, não um rótulo curto como "CC BY 2.0" — com o
- * `-webkit-line-clamp` de poucas linhas em styles.css, deixá-la primeiro
- * cortava o autor (e o próprio link do Comic Vine) antes de aparecerem na
- * tela. Autor e fonte são curtos e cabem sempre; é a licença, no fim, que
- * absorve o corte quando o texto não cabe — a atribuição em si nunca é
- * truncada. O `aria-label` no wrapper repete essa ordem para leitor de tela.
- */
-function creditLabel({ author, license, source }: ImageCredit): JSX.Element {
-  const label = `Foto: ${author}, fonte ${source}, licença ${license}`;
-  return (
-    <span aria-label={label}>
-      {author} · {source === 'Comic Vine' ? <ComicVineLink /> : source} · {license}
-    </span>
-  );
-}
-
-/**
- * Termos do Comic Vine exigem link de volta ao site sempre que os dados da
- * API são exibidos. `aria-label` carrega o aviso de nova aba porque o texto
- * visível ("Comic Vine") já ocupa espaço contado pelo line-clamp do
- * elemento pai — um texto extra visualmente oculto ainda entraria nessa
- * conta e empurraria o corte para antes do previsto.
- */
-function ComicVineLink(): JSX.Element {
-  return (
-    <a href="https://comicvine.gamespot.com" target="_blank" rel="noopener noreferrer" aria-label="Comic Vine (abre em nova aba)">
-      Comic Vine
-    </a>
   );
 }
 
