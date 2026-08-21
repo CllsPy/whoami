@@ -1,6 +1,13 @@
 # Quem Sou Eu?
 
-Jogo multiplayer em tempo real para descobrir o personagem da sua própria testa.
+Jogo multiplayer em tempo real com dois modos: descobrir o personagem da própria testa ou desenhar em cadeia para encontrar o impostor.
+
+## Modos de jogo
+
+- **Quem Sou Eu:** cada pessoa recebe um personagem que só as outras conseguem ver e tenta descobrir a própria identidade.
+- **Quem é o impostor:** todos menos uma pessoa recebem o mesmo animal ou objeto. Cada jogador desenha por um tempo configurável (10s, 20s, 30s, 1min ou sem limite), a vez passa para o próximo e, depois do último, volta ao primeiro sem encerrar a rodada. Enquanto o mural continua, os desenhistas têm uma acusação e o impostor pode tentar descobrir a palavra.
+
+No novo modo, a palavra é protegida no servidor. Os desenhistas recebem a palavra na própria visão da sala; o impostor recebe apenas o papel secreto. Um traço é validado pelo servidor, sincronizado com todos e só pode ser feito durante a vez correspondente.
 
 ## Catálogo de personagens
 
@@ -136,6 +143,8 @@ Variáveis disponíveis estão em `.env.example`:
 ## Privacidade da rodada
 
 O personagem atribuído fica somente na memória do servidor. Durante a rodada, o servidor cria uma visão diferente para cada socket: cada jogador recebe os personagens dos outros e não recebe o próprio. O quadro completo só é enviado no evento `round:finished`, depois que todos acertarem.
+
+No modo `draw-impostor`, o mesmo princípio vale para a wordlist de animais e objetos: o impostor nunca recebe `draw.word` durante a rodada, e o papel de cada pessoa só aparece na revelação final. Acusações erradas só marcam o jogador como fora; o alvo escolhido não é transmitido aos outros participantes. Em “sem limite”, a vez avança manualmente; o anfitrião também pode encerrar e revelar a rodada quando quiser.
 
 O `sessionStorage` do navegador guarda apenas código da sala, apelido, identificador do jogador e token de reconexão — nunca o personagem secreto.
 

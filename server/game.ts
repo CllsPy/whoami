@@ -3,6 +3,12 @@ import type { Server, Socket } from 'socket.io';
 import type {
   ClientToServerEvents,
   CreateRoomInput,
+  DrawAccusationInput,
+  DrawOutcome,
+  DrawingStroke,
+  DrawStrokeInput,
+  DrawTurnDuration,
+  DrawWordGuessInput,
   GameErrorPayload,
   GuessInput,
   HintAnswerInput,
@@ -19,6 +25,7 @@ import type {
 import { availableHintPowerups } from '../shared/hints';
 import { normalizeNickname, normalizeRoomCode, normalizeText } from './normalization';
 import { pointsForRank } from './scoring';
+import { drawingWordMatches, pickDrawingWord, type DrawingWord } from './drawing-wordlist';
 import { characterMatches, characters, type Character, pickCharacters } from './wordlist';
 
 export const MIN_PLAYERS = 2;
@@ -27,6 +34,9 @@ const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DEFAULT_ROOM_TTL_MINUTES = 30;
 const MAX_GUESS_LENGTH = 100;
+export const DRAW_TURN_MS = 10_000;
+const MAX_STROKE_POINTS = 240;
+const MAX_STROKE_WIDTH = 18;
 
 /**
  * Quem manda neste piso é o catálogo, não o gosto por entrada limpa. O acervo
@@ -53,6 +63,10 @@ interface PlayerState {
   solved: boolean;
   rank: number | null;
   guesses: string[];
+  drawRole: 'drawer' | 'impostor' | null;
+  drawAccusationUsed: boolean;
+  drawEliminated: boolean;
+  drawWordGuessUsed: boolean;
   disconnectedAt: number | null;
   solvedAt: number | null;
   /** Total acumulado da sessão. Só cresce; nunca é zerado por nova rodada. */
@@ -69,12 +83,26 @@ interface PlayerState {
   hintRequestTargetId: string | null;
 }
 
+interface DrawingState {
+  word: DrawingWord;
+  impostorId: string;
+  phase: 'drawing' | 'finished';
+  turnOrder: string[];
+  turnIndex: number;
+  turnEndsAt: number | null;
+  strokes: DrawingStroke[];
+  outcome: DrawOutcome | null;
+}
+
 interface RoomState {
   code: string;
   hostId: string;
   phase: RoomView['phase'];
+  mode: NonNullable<RoomView['mode']>;
+  drawTurnMs: DrawTurnDuration;
   round: number;
   players: Map<string, PlayerState>;
+  drawing: DrawingState | null;
   createdAt: number;
   updatedAt: number;
   usedCharacterIds: Set<string>;
@@ -97,9 +125,12 @@ export class GameManager {
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomTtlMs: number;
   private readonly cleanupTimer: NodeJS.Timeout;
+  private readonly drawTimers = new Map<string, NodeJS.Timeout>();
+  private readonly defaultDrawTurnMs: number;
 
-  constructor(private readonly io: GameIo, roomTtlMinutes = Number(process.env.ROOM_TTL_MINUTES) || DEFAULT_ROOM_TTL_MINUTES) {
+  constructor(private readonly io: GameIo, roomTtlMinutes = Number(process.env.ROOM_TTL_MINUTES) || DEFAULT_ROOM_TTL_MINUTES, drawTurnMs = DRAW_TURN_MS) {
     this.roomTtlMs = roomTtlMinutes * 60_000;
+    this.defaultDrawTurnMs = Math.max(10, drawTurnMs);
     this.cleanupTimer = setInterval(() => this.cleanupRooms(), 60_000);
     this.cleanupTimer.unref();
   }
@@ -109,6 +140,11 @@ export class GameManager {
     socket.on('room:join', (payload, ack) => this.joinRoom(socket, payload, ack));
     socket.on('player:ready', (payload) => this.setReady(socket, payload));
     socket.on('round:guess', (payload) => this.guess(socket, payload));
+    socket.on('draw:stroke', (payload) => this.addDrawingStroke(socket, payload));
+    socket.on('draw:pass', () => this.passDrawingTurn(socket));
+    socket.on('draw:accuse', (payload) => this.accuseDrawingImpostor(socket, payload));
+    socket.on('draw:guess-word', (payload) => this.guessDrawingWord(socket, payload));
+    socket.on('draw:end', () => this.endDrawingRound(socket));
     socket.on('round:playAgain', () => this.playAgain(socket));
     socket.on('round:endEarly', () => this.endEarly(socket));
     socket.on('room:removeAbsent', (payload) => this.removeAbsent(socket, payload));
@@ -123,6 +159,8 @@ export class GameManager {
 
   dispose(): void {
     clearInterval(this.cleanupTimer);
+    for (const timer of this.drawTimers.values()) clearTimeout(timer);
+    this.drawTimers.clear();
   }
 
   getRoomCount(): number {
@@ -143,12 +181,16 @@ export class GameManager {
 
     const code = this.createRoomCode();
     const player = this.createPlayer(nickname, socket.id);
+    const mode = this.validateGameMode(payload?.mode);
     const room: RoomState = {
       code,
       hostId: player.id,
       phase: 'lobby',
+      mode,
+      drawTurnMs: mode === 'draw-impostor' ? this.validateDrawTurn(payload?.drawTurnMs) : null,
       round: 0,
       players: new Map([[player.id, player]]),
+      drawing: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       usedCharacterIds: new Set(),
@@ -492,6 +534,8 @@ export class GameManager {
 
     room.phase = 'lobby';
     room.roundStartedAt = null;
+    this.clearDrawingTimer(room.code);
+    room.drawing = null;
     for (const candidate of room.players.values()) {
       candidate.ready = false;
       candidate.character = null;
@@ -504,6 +548,10 @@ export class GameManager {
       // HINT-05: o direito de pedir dica é da rodada, não da sessão.
       candidate.hintsUsed = 0;
       candidate.hintRequestTargetId = null;
+      candidate.drawRole = null;
+      candidate.drawAccusationUsed = false;
+      candidate.drawEliminated = false;
+      candidate.drawWordGuessUsed = false;
     }
     this.touch(room);
     this.broadcastRoomState(room);
@@ -516,6 +564,10 @@ export class GameManager {
     room.roundStartedAt = Date.now();
     const players = Array.from(room.players.values());
     room.roundPlayerCount = players.length;
+    if (room.mode === 'draw-impostor') {
+      this.startDrawingRound(room);
+      return;
+    }
 
     const availableCount = characters.length - room.usedCharacterIds.size;
     if (availableCount < players.length) {
@@ -541,10 +593,256 @@ export class GameManager {
       if (player.character) {
         room.usedCharacterIds.add(player.character.id);
       }
+      player.drawRole = null;
+      player.drawAccusationUsed = false;
+      player.drawEliminated = false;
+      player.drawWordGuessUsed = false;
     });
     this.touch(room);
     this.broadcastRoomState(room);
     this.broadcastRoundStarted(room);
+  }
+
+  private startDrawingRound(room: RoomState): void {
+    const players = Array.from(room.players.values());
+    const turnOrder = this.shuffle(players.map((player) => player.id));
+    const impostor = players[Math.floor(Math.random() * players.length)]!;
+
+    for (const player of players) {
+      player.character = null;
+      player.ready = false;
+      player.solved = false;
+      player.rank = null;
+      player.guesses = [];
+      player.roundPoints = null;
+      player.hintsUsed = 0;
+      player.hintRequestTargetId = null;
+      player.drawRole = player.id === impostor.id ? 'impostor' : 'drawer';
+      player.drawAccusationUsed = false;
+      player.drawEliminated = false;
+      player.drawWordGuessUsed = false;
+    }
+
+    room.drawing = {
+      word: pickDrawingWord(),
+      impostorId: impostor.id,
+      phase: 'drawing',
+      turnOrder,
+      turnIndex: 0,
+      turnEndsAt: room.drawTurnMs === null ? null : Date.now() + room.drawTurnMs,
+      strokes: [],
+      outcome: null,
+    };
+    this.touch(room);
+    this.broadcastRoomState(room);
+    this.broadcastRoundStarted(room);
+    this.scheduleDrawingTurn(room);
+  }
+
+  private addDrawingStroke(socket: GameSocket, payload: DrawStrokeInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    const drawing = room.drawing;
+    if (room.mode !== 'draw-impostor' || room.phase !== 'playing' || !drawing || drawing.phase !== 'drawing') {
+      this.sendError(socket, 'DRAW_NOT_ACTIVE', 'O quadro não está recebendo desenhos agora.');
+      return;
+    }
+    const currentPlayerId = drawing.turnOrder[drawing.turnIndex];
+    if (currentPlayerId !== player.id) {
+      this.sendError(socket, 'NOT_YOUR_DRAW_TURN', 'Espere a sua vez de desenhar.');
+      return;
+    }
+    if (drawing.turnEndsAt !== null && Date.now() >= drawing.turnEndsAt) {
+      this.advanceDrawingTurn(room);
+      this.sendError(socket, 'DRAW_TURN_EXPIRED', 'Seu tempo acabou. O quadro passou para a próxima pessoa.');
+      return;
+    }
+
+    const stroke = this.sanitizeStroke(player.id, payload);
+    if (!stroke) {
+      this.sendError(socket, 'INVALID_STROKE', 'Esse traço não pôde ser desenhado.');
+      return;
+    }
+
+    drawing.strokes.push(stroke);
+    this.touch(room);
+    this.io.to(room.code).emit('draw:stroke', stroke);
+  }
+
+  private passDrawingTurn(socket: GameSocket): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    const drawing = room.drawing;
+    if (room.mode !== 'draw-impostor' || room.phase !== 'playing' || !drawing || drawing.phase !== 'drawing') {
+      this.sendError(socket, 'DRAW_NOT_ACTIVE', 'O quadro não está recebendo desenhos agora.');
+      return;
+    }
+
+    const currentPlayerId = drawing.turnOrder[drawing.turnIndex];
+    if (currentPlayerId !== player.id && room.hostId !== player.id) {
+      this.sendError(socket, 'NOT_YOUR_DRAW_TURN', 'Espere a sua vez de desenhar.');
+      return;
+    }
+    this.advanceDrawingTurn(room);
+  }
+
+  private accuseDrawingImpostor(socket: GameSocket, payload: DrawAccusationInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    const drawing = room.drawing;
+    if (room.mode !== 'draw-impostor' || room.phase !== 'playing' || !drawing || drawing.phase === 'finished') {
+      this.sendError(socket, 'ACCUSATION_NOT_OPEN', 'Os palpites ficam abertos enquanto o mural continua rodando.');
+      return;
+    }
+    if (player.drawRole !== 'drawer' || player.drawAccusationUsed || player.drawEliminated) {
+      this.sendError(socket, 'ACCUSATION_UNAVAILABLE', 'Você não tem mais um palpite de impostor disponível.');
+      return;
+    }
+
+    const targetPlayerId = typeof payload?.targetPlayerId === 'string' ? payload.targetPlayerId : '';
+    const target = room.players.get(targetPlayerId);
+    if (!target || target.id === player.id) {
+      this.sendError(socket, 'INVALID_ACCUSATION', 'Escolha outra pessoa da sala.');
+      return;
+    }
+
+    player.drawAccusationUsed = true;
+    if (target.id === drawing.impostorId) {
+      player.solved = true;
+      player.rank = 1;
+      socket.emit('draw:accusation:result', {
+        correct: true,
+        eliminated: false,
+        message: 'Você encontrou o impostor. O grupo levou a rodada.',
+      });
+      this.finishDrawingRound(room, {
+        winner: 'players',
+        reason: 'impostor-caught',
+        message: 'O grupo encontrou o impostor.',
+      });
+      return;
+    }
+
+    player.drawEliminated = true;
+    socket.emit('draw:accusation:result', {
+      correct: false,
+      eliminated: true,
+      message: 'Você errou. Está fora — não dê pistas sobre o seu palpite.',
+    });
+    this.touch(room);
+    this.broadcastRoomState(room);
+
+    const everyDrawerUsed = Array.from(room.players.values())
+      .filter((candidate) => candidate.drawRole === 'drawer')
+      .every((candidate) => candidate.drawAccusationUsed);
+    if (everyDrawerUsed) {
+      this.finishDrawingRound(room, {
+        winner: 'impostor',
+        reason: 'all-accusations-used',
+        message: 'O impostor sobreviveu aos palpites.',
+      });
+    }
+  }
+
+  private guessDrawingWord(socket: GameSocket, payload: DrawWordGuessInput): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    const drawing = room.drawing;
+    if (room.mode !== 'draw-impostor' || room.phase !== 'playing' || !drawing || drawing.phase === 'finished') {
+      this.sendError(socket, 'WORD_GUESS_NOT_OPEN', 'O palpite da palavra fica aberto enquanto o mural continua rodando.');
+      return;
+    }
+    if (player.drawRole !== 'impostor' || player.drawWordGuessUsed) {
+      this.sendError(socket, 'WORD_GUESS_UNAVAILABLE', 'Você não tem mais um palpite da palavra disponível.');
+      return;
+    }
+
+    const text = String(payload?.text ?? '').trim().slice(0, MAX_GUESS_LENGTH);
+    if (!text || normalizeText(text).length < 2) {
+      this.sendError(socket, 'INVALID_WORD_GUESS', 'Digite uma palavra com pelo menos 2 caracteres.');
+      return;
+    }
+
+    player.drawWordGuessUsed = true;
+    const correct = drawingWordMatches(drawing.word, text);
+    socket.emit('draw:word:result', {
+      correct,
+      message: correct ? 'Você matou a palavra. O impostor venceu.' : 'Palavra errada. A turma levou a rodada.',
+    });
+    this.finishDrawingRound(room, {
+      winner: correct ? 'impostor' : 'players',
+      reason: correct ? 'impostor-guessed' : 'impostor-missed',
+      message: correct ? 'O impostor descobriu o que estava sendo desenhado.' : 'O impostor errou a palavra.',
+    });
+  }
+
+  private endDrawingRound(socket: GameSocket): void {
+    const context = this.getContext(socket);
+    if (!context) return;
+    const { room, player } = context;
+    if (room.mode !== 'draw-impostor' || room.phase !== 'playing' || !room.drawing) {
+      this.sendError(socket, 'DRAW_NOT_ACTIVE', 'Não há uma rodada de desenho para encerrar.');
+      return;
+    }
+    if (room.hostId !== player.id) {
+      this.sendError(socket, 'HOST_ONLY', 'Só o anfitrião pode revelar a rodada sem um palpite.');
+      return;
+    }
+    this.finishDrawingRound(room, {
+      winner: 'players',
+      reason: 'host-ended',
+      message: 'O anfitrião encerrou a rodada e revelou o mural.',
+    });
+  }
+
+  private scheduleDrawingTurn(room: RoomState): void {
+    this.clearDrawingTimer(room.code);
+    const drawing = room.drawing;
+    if (room.phase !== 'playing' || !drawing || drawing.phase !== 'drawing' || drawing.turnEndsAt === null) return;
+    const delay = Math.max(0, drawing.turnEndsAt - Date.now()) + 30;
+    const timer = setTimeout(() => this.advanceDrawingTurn(room), delay);
+    timer.unref();
+    this.drawTimers.set(room.code, timer);
+  }
+
+  private advanceDrawingTurn(room: RoomState): void {
+    const drawing = room.drawing;
+    if (room.phase !== 'playing' || !drawing || drawing.phase !== 'drawing') return;
+    this.clearDrawingTimer(room.code);
+    drawing.turnIndex = drawing.turnIndex + 1 >= drawing.turnOrder.length ? 0 : drawing.turnIndex + 1;
+    drawing.turnEndsAt = room.drawTurnMs === null ? null : Date.now() + room.drawTurnMs;
+    this.touch(room);
+    this.broadcastRoomState(room);
+    this.scheduleDrawingTurn(room);
+  }
+
+  private finishDrawingRound(room: RoomState, outcome: DrawOutcome): void {
+    const drawing = room.drawing;
+    if (room.phase === 'finished' || !drawing) return;
+    this.clearDrawingTimer(room.code);
+    room.phase = 'finished';
+    drawing.phase = 'finished';
+    drawing.turnEndsAt = null;
+    drawing.outcome = outcome;
+    this.touch(room);
+    this.broadcastRoomState(room);
+
+    const ranking = Array.from(room.players.values())
+      .sort((left, right) => (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER))
+      .map((candidate) => ({ playerId: candidate.id, nickname: candidate.nickname, rank: candidate.rank, solveMs: this.deriveSolveMs(room, candidate) }));
+    for (const candidate of room.players.values()) {
+      const candidateSocket = this.socketForPlayer(candidate);
+      if (candidateSocket) {
+        candidateSocket.emit('round:finished', {
+          room: this.viewRoom(room, candidate.id),
+          ranking,
+        });
+      }
+    }
   }
 
   private finishRound(room: RoomState): void {
@@ -576,6 +874,7 @@ export class GameManager {
     socket.data.roomCode = undefined;
     socket.data.playerId = undefined;
     if (room.players.size === 0) {
+      this.clearDrawingTimer(room.code);
       this.rooms.delete(room.code);
       return;
     }
@@ -652,13 +951,25 @@ export class GameManager {
 
     return {
       code: room.code,
+      mode: room.mode,
+      drawTurnMs: room.drawTurnMs,
       phase: room.phase,
       round: room.round,
       hostId: room.hostId,
-      you: { id: viewer.id, nickname: viewer.nickname },
+      you: {
+        id: viewer.id,
+        nickname: viewer.nickname,
+        ...(room.mode === 'draw-impostor' && viewer.drawRole ? { drawRole: viewer.drawRole } : {}),
+        ...(room.mode === 'draw-impostor' ? {
+          drawWordGuessUsed: viewer.drawWordGuessUsed,
+          drawAccusationUsed: viewer.drawAccusationUsed,
+          drawEliminated: viewer.drawEliminated,
+        } : {}),
+      },
       guessHistory: [...viewer.guesses],
       roundStartedAt: room.roundStartedAt,
       serverNow: Date.now(),
+      ...(room.mode === 'draw-impostor' && room.drawing ? { draw: this.viewDrawing(room, viewer.id) } : {}),
       players: Array.from(room.players.values()).map((player) => {
         const publicPlayer = {
           id: player.id,
@@ -673,7 +984,13 @@ export class GameManager {
           roundPoints: player.roundPoints,
           hintsUsed: player.hintsUsed,
           hintRequestTargetId: player.hintRequestTargetId,
+          drawEliminated: player.drawEliminated,
+          drawAccusationUsed: player.drawAccusationUsed,
         };
+
+        if (room.mode === 'draw-impostor' && room.phase === 'finished' && player.drawRole) {
+          return { ...publicPlayer, drawRole: player.drawRole };
+        }
 
         if (player.character && (room.phase === 'finished' || (room.phase === 'playing' && player.id !== viewerId))) {
           return {
@@ -688,6 +1005,35 @@ export class GameManager {
         }
         return publicPlayer;
       }),
+    };
+  }
+
+  private viewDrawing(room: RoomState, viewerId: string): NonNullable<RoomView['draw']> {
+    const drawing = room.drawing;
+    if (!drawing) throw new Error('Drawing state not found');
+    const viewer = room.players.get(viewerId);
+    if (!viewer) throw new Error('Viewer not found in room');
+
+    return {
+      phase: drawing.phase,
+      currentTurnPlayerId: drawing.phase === 'drawing' ? drawing.turnOrder[drawing.turnIndex] ?? null : null,
+      turnEndsAt: drawing.phase === 'drawing' ? drawing.turnEndsAt : null,
+      turnNumber: Math.min(drawing.turnIndex + 1, drawing.turnOrder.length),
+      totalTurns: drawing.turnOrder.length,
+      strokes: drawing.strokes.map((stroke) => ({
+        id: stroke.id,
+        playerId: stroke.playerId,
+        points: stroke.points.map((point) => ({ ...point })),
+        width: stroke.width,
+      })),
+      ...((room.phase === 'finished' || viewer.drawRole === 'drawer') ? {
+        word: {
+          id: drawing.word.id,
+          name: drawing.word.name,
+          category: drawing.word.category,
+        },
+      } : {}),
+      ...(drawing.outcome ? { outcome: drawing.outcome } : {}),
     };
   }
 
@@ -733,6 +1079,10 @@ export class GameManager {
       solved: false,
       rank: null,
       guesses: [],
+      drawRole: null,
+      drawAccusationUsed: false,
+      drawEliminated: false,
+      drawWordGuessUsed: false,
       disconnectedAt: null,
       solvedAt: null,
       score: 0,
@@ -756,6 +1106,55 @@ export class GameManager {
     const normalized = normalizeText(nickname);
     if (normalized.length < 2 || nickname.length > 24) return null;
     return nickname;
+  }
+
+  private validateGameMode(value: unknown): RoomState['mode'] {
+    return value === 'draw-impostor' ? 'draw-impostor' : 'whoami';
+  }
+
+  private validateDrawTurn(value: unknown): DrawTurnDuration {
+    if (value === null) return null;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      const allowedDurations = new Set([10_000, 20_000, 30_000, 60_000]);
+      if (allowedDurations.has(value) || value === this.defaultDrawTurnMs) return value;
+    }
+    return this.defaultDrawTurnMs;
+  }
+
+  private sanitizeStroke(playerId: string, payload: DrawStrokeInput): DrawingStroke | null {
+    const rawPoints = Array.isArray(payload?.points) ? payload.points.slice(0, MAX_STROKE_POINTS) : [];
+    const points = rawPoints.flatMap((rawPoint) => {
+      if (!rawPoint || typeof rawPoint !== 'object') return [];
+      const point = rawPoint as { x?: unknown; y?: unknown };
+      if (typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return [];
+      return [{ x: Math.min(1, Math.max(0, point.x)), y: Math.min(1, Math.max(0, point.y)) }];
+    });
+    if (points.length === 0) return null;
+
+    const width = typeof payload?.width === 'number' && Number.isFinite(payload.width)
+      ? Math.min(MAX_STROKE_WIDTH, Math.max(1, payload.width))
+      : 4;
+    return {
+      id: `stroke-${randomBytes(8).toString('hex')}`,
+      playerId,
+      points,
+      width,
+    };
+  }
+
+  private shuffle<T>(values: T[]): T[] {
+    const shuffled = [...values];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex]!, shuffled[index]!];
+    }
+    return shuffled;
+  }
+
+  private clearDrawingTimer(roomCode: string): void {
+    const timer = this.drawTimers.get(roomCode);
+    if (timer) clearTimeout(timer);
+    this.drawTimers.delete(roomCode);
   }
 
   private success(room: RoomState, player: PlayerState): RoomActionResult {
@@ -788,6 +1187,8 @@ export class GameManager {
   private resetAfterDeparture(room: RoomState): void {
     room.phase = 'lobby';
     room.roundStartedAt = null;
+    this.clearDrawingTimer(room.code);
+    room.drawing = null;
     for (const candidate of room.players.values()) {
       candidate.ready = false;
       candidate.character = null;
@@ -799,6 +1200,10 @@ export class GameManager {
       // HINT-05: a rodada abortada leva junto os power-ups e os pedidos dela.
       candidate.hintsUsed = 0;
       candidate.hintRequestTargetId = null;
+      candidate.drawRole = null;
+      candidate.drawAccusationUsed = false;
+      candidate.drawEliminated = false;
+      candidate.drawWordGuessUsed = false;
     }
     this.touch(room);
   }
@@ -818,14 +1223,15 @@ export class GameManager {
     for (const [code, room] of this.rooms) {
       const connectedCount = Array.from(room.players.values()).filter((player) => player.connected).length;
       if (connectedCount === 0 && now - room.updatedAt > this.roomTtlMs) {
+        this.clearDrawingTimer(code);
         this.rooms.delete(code);
       }
     }
   }
 }
 
-export function createGameManager(io: GameIo): GameManager {
-  return new GameManager(io);
+export function createGameManager(io: GameIo, roomTtlMinutes?: number, drawTurnMs?: number): GameManager {
+  return new GameManager(io, roomTtlMinutes, drawTurnMs);
 }
 
 export { characters };

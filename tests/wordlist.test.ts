@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { characterMatches, characters, englishOriginals, pickCharacters, totalSeedCount } from '../server/wordlist';
 import { characterImages } from '../server/character-images';
+import { drawingWordMatches, drawingWords } from '../server/drawing-wordlist';
 import { normalizeText } from '../server/normalization';
 import { MIN_GUESS_LENGTH } from '../server/game';
 
@@ -287,5 +288,15 @@ describe('catálogo de imagens', () => {
     });
 
     expect(rejeitados).toEqual([]);
+  });
+
+  it('tem uma wordlist de animais e objetos com correspondência exata', () => {
+    expect(drawingWords.length).toBeGreaterThanOrEqual(150);
+    expect(new Set(drawingWords.map((word) => word.id)).size).toBe(drawingWords.length);
+    expect(new Set(drawingWords.map((word) => word.category))).toEqual(new Set(['Animais', 'Objetos']));
+    const dog = drawingWords.find((word) => word.name === 'cachorro');
+    expect(dog).toBeDefined();
+    expect(drawingWordMatches(dog!, ' CÃO ')).toBe(true);
+    expect(drawingWordMatches(dog!, 'cachorron')).toBe(false);
   });
 });

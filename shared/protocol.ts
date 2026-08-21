@@ -1,4 +1,45 @@
+export type GameMode = 'whoami' | 'draw-impostor';
 export type RoomPhase = 'lobby' | 'playing' | 'finished';
+export type DrawPhase = 'drawing' | 'finished';
+export type DrawRole = 'drawer' | 'impostor';
+export type DrawTurnDuration = number | null;
+export type DrawOutcomeWinner = 'players' | 'impostor';
+export type DrawOutcomeReason = 'impostor-caught' | 'impostor-guessed' | 'impostor-missed' | 'all-accusations-used' | 'host-ended';
+
+export interface DrawWordPublic {
+  id: string;
+  name: string;
+  category: string;
+}
+
+export interface DrawingPoint {
+  x: number;
+  y: number;
+}
+
+export interface DrawingStroke {
+  id: string;
+  playerId: string;
+  points: DrawingPoint[];
+  width: number;
+}
+
+export interface DrawOutcome {
+  winner: DrawOutcomeWinner;
+  reason: DrawOutcomeReason;
+  message: string;
+}
+
+export interface DrawGameView {
+  phase: DrawPhase;
+  currentTurnPlayerId: string | null;
+  turnEndsAt: number | null;
+  turnNumber: number;
+  totalTurns: number;
+  strokes: DrawingStroke[];
+  word?: DrawWordPublic;
+  outcome?: DrawOutcome;
+}
 
 export interface CharacterPublic {
   id: string;
@@ -25,6 +66,9 @@ export interface PlayerView {
   connected: boolean;
   solved: boolean;
   rank: number | null;
+  drawEliminated: boolean;
+  drawAccusationUsed: boolean;
+  drawRole?: DrawRole;
   character?: CharacterPublic;
   solveMs: number | null;
   /** Total acumulado da sessão, sempre calculado pelo servidor (SCORE-05). */
@@ -49,6 +93,8 @@ export interface PlayerView {
 
 export interface RoomView {
   code: string;
+  mode: GameMode;
+  drawTurnMs: DrawTurnDuration;
   phase: RoomPhase;
   round: number;
   hostId: string;
@@ -56,14 +102,21 @@ export interface RoomView {
   you: {
     id: string;
     nickname: string;
+    drawRole?: DrawRole;
+    drawWordGuessUsed?: boolean;
+    drawAccusationUsed?: boolean;
+    drawEliminated?: boolean;
   };
   guessHistory: string[];
   roundStartedAt: number | null;
   serverNow: number;
+  draw?: DrawGameView;
 }
 
 export interface CreateRoomInput {
   nickname: string;
+  mode?: GameMode;
+  drawTurnMs?: DrawTurnDuration;
 }
 
 export interface JoinRoomInput {
@@ -97,6 +150,19 @@ export interface HintRequestInput {
 /** Quem pediu a dica, informado pelo alvo ao marcar que respondeu (HINT-10). */
 export interface HintAnswerInput {
   askerId: string;
+}
+
+export interface DrawStrokeInput {
+  points: DrawingPoint[];
+  width?: number;
+}
+
+export interface DrawAccusationInput {
+  targetPlayerId: string;
+}
+
+export interface DrawWordGuessInput {
+  text: string;
 }
 
 export interface RoomActionSuccess {
@@ -144,6 +210,17 @@ export interface RoundFinishedPayload {
   }>;
 }
 
+export interface DrawAccusationResultPayload {
+  correct: boolean;
+  eliminated: boolean;
+  message: string;
+}
+
+export interface DrawWordResultPayload {
+  correct: boolean;
+  message: string;
+}
+
 export interface GameErrorPayload {
   code: string;
   message: string;
@@ -159,6 +236,11 @@ export interface ClientToServerEvents {
   'room:join': (payload: JoinRoomInput, ack: (result: RoomActionResult) => void) => void;
   'player:ready': (payload: ReadyInput) => void;
   'round:guess': (payload: GuessInput) => void;
+  'draw:stroke': (payload: DrawStrokeInput) => void;
+  'draw:pass': () => void;
+  'draw:accuse': (payload: DrawAccusationInput) => void;
+  'draw:guess-word': (payload: DrawWordGuessInput) => void;
+  'draw:end': () => void;
   'round:playAgain': () => void;
   // A rodada só termina sozinha quando todo mundo acerta, então um jogador que
   // cai antes de descobrir a própria identidade a congela para sempre. Este
@@ -181,6 +263,9 @@ export interface ServerToClientEvents {
   'player:solved': (payload: PlayerSolvedPayload) => void;
   'round:finished': (payload: RoundFinishedPayload) => void;
   'room:notice': (payload: RoomNoticePayload) => void;
+  'draw:stroke': (stroke: DrawingStroke) => void;
+  'draw:accusation:result': (payload: DrawAccusationResultPayload) => void;
+  'draw:word:result': (payload: DrawWordResultPayload) => void;
   error: (payload: GameErrorPayload) => void;
 }
 

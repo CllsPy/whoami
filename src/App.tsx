@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react';
 import type {
+  DrawingStroke,
+  DrawTurnDuration,
+  GameMode,
   GameErrorPayload,
   GuessResultPayload,
   PlayerSolvedPayload,
@@ -12,19 +15,24 @@ import { availableHintPowerups } from '../shared/hints';
 import { formatDuration } from '../shared/time';
 import { NotesPanel } from './NotesPanel';
 import { clearSession, readSession, saveSession, serverMayHibernate, socket, wakeServer, type SessionData } from './socket';
+import { DrawingFinish, DrawingRound, type DrawingFeedback } from './DrawingGame';
 
 type HomeMode = 'create' | 'join';
 type ConnectionState = 'offline' | 'connecting' | 'waking' | 'online' | 'reconnecting';
 type Feedback = { tone: 'neutral' | 'success' | 'error'; message: string } | null;
 
 const MAX_NICKNAME_LENGTH = 24;
+const DEFAULT_GAME_MODE: GameMode = 'whoami';
+const DEFAULT_DRAW_TURN: DrawTurnDuration = 10_000;
 
 function App(): JSX.Element {
   const [room, setRoom] = useState<RoomView | null>(null);
   const [homeMode, setHomeMode] = useState<HomeMode>('create');
   const [nickname, setNickname] = useState(readSession()?.nickname ?? '');
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [pendingAction, setPendingAction] = useState<{ mode: HomeMode; nickname: string; code: string } | null>(null);
+  const [selectedGame, setSelectedGame] = useState<GameMode>(DEFAULT_GAME_MODE);
+  const [drawTurnMs, setDrawTurnMs] = useState<DrawTurnDuration>(DEFAULT_DRAW_TURN);
+  const [pendingAction, setPendingAction] = useState<{ mode: HomeMode; nickname: string; code: string; gameMode: GameMode; drawTurnMs: DrawTurnDuration } | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('offline');
   const [error, setError] = useState<string | null>(null);
   const [guess, setGuess] = useState('');
@@ -34,6 +42,7 @@ function App(): JSX.Element {
   const [finalRanking, setFinalRanking] = useState<RoundFinishedPayload['ranking']>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [hintPickerOpen, setHintPickerOpen] = useState(false);
+  const [drawFeedback, setDrawFeedback] = useState<DrawingFeedback>(null);
 
   useEffect(() => {
     const session = readSession();
@@ -45,7 +54,7 @@ function App(): JSX.Element {
 
       const action = pendingAction;
       setPendingAction(null);
-      emitRoomAction(action.mode, action.nickname, action.code);
+      emitRoomAction(action.mode, action.nickname, action.code, action.gameMode, action.drawTurnMs);
     };
     const onDisconnect = (): void => setConnection('offline');
     const onConnectError = (): void => {
@@ -69,6 +78,7 @@ function App(): JSX.Element {
       setConnection('online');
       if (nextRoom.phase === 'lobby') {
         setFeedback(null);
+        setDrawFeedback(null);
         setFinalRanking([]);
         setNotice(null);
       }
@@ -77,6 +87,7 @@ function App(): JSX.Element {
       setRoom(nextRoom);
       setGuess('');
       setFeedback(null);
+      setDrawFeedback(null);
       setLastSolved(null);
       setFinalRanking([]);
     };
@@ -91,13 +102,30 @@ function App(): JSX.Element {
     const onRoundFinished = (payload: RoundFinishedPayload): void => {
       setRoom(payload.room);
       setFinalRanking(payload.ranking);
-      setFeedback({ tone: 'success', message: 'Todo mundo descobriu. Agora a sala está revelada.' });
+      if (payload.room.mode === 'draw-impostor') {
+        setDrawFeedback({ tone: 'success', message: payload.room.draw?.outcome?.message ?? 'A rodada foi revelada.' });
+      } else {
+        setFeedback({ tone: 'success', message: 'Todo mundo descobriu. Agora a sala está revelada.' });
+      }
+    };
+    const onDrawStroke = (stroke: DrawingStroke): void => {
+      setRoom((current) => {
+        if (!current?.draw || current.draw.strokes.some((existing) => existing.id === stroke.id)) return current;
+        return { ...current, draw: { ...current.draw, strokes: [...current.draw.strokes, stroke] } };
+      });
+    };
+    const onDrawAccusationResult = (result: { correct: boolean; eliminated: boolean; message: string }): void => {
+      setDrawFeedback({ tone: result.correct ? 'success' : 'neutral', message: result.message });
+    };
+    const onDrawWordResult = (result: { correct: boolean; message: string }): void => {
+      setDrawFeedback({ tone: result.correct ? 'success' : 'neutral', message: result.message });
     };
     const onRoomNotice = (payload: RoomNoticePayload): void => {
       setNotice(payload.message);
     };
     const onGameError = (payload: GameErrorPayload): void => {
       setError(payload.message);
+      setDrawFeedback({ tone: 'error', message: payload.message });
       if (payload.code === 'SESSION_EXPIRED') {
         clearSession();
         setRoom(null);
@@ -115,6 +143,9 @@ function App(): JSX.Element {
     socket.on('player:solved', onPlayerSolved);
     socket.on('round:finished', onRoundFinished);
     socket.on('room:notice', onRoomNotice);
+    socket.on('draw:stroke', onDrawStroke);
+    socket.on('draw:accusation:result', onDrawAccusationResult);
+    socket.on('draw:word:result', onDrawWordResult);
     socket.on('error', onGameError);
 
     let cancelled = false;
@@ -138,6 +169,9 @@ function App(): JSX.Element {
       socket.off('player:solved', onPlayerSolved);
       socket.off('round:finished', onRoundFinished);
       socket.off('room:notice', onRoomNotice);
+      socket.off('draw:stroke', onDrawStroke);
+      socket.off('draw:accusation:result', onDrawAccusationResult);
+      socket.off('draw:word:result', onDrawWordResult);
       socket.off('error', onGameError);
     };
   }, [pendingAction]);
@@ -163,7 +197,7 @@ function App(): JSX.Element {
   const hintAskers = useMemo(() => room?.players.filter((player) => player.hintRequestTargetId === room.you.id) ?? [], [room]);
   const hintTargetOfMine = useMemo(() => room?.players.find((player) => player.id === me?.hintRequestTargetId) ?? null, [room, me]);
 
-  function emitRoomAction(mode: HomeMode, nextNickname: string, code: string): void {
+  function emitRoomAction(mode: HomeMode, nextNickname: string, code: string, gameMode: GameMode, selectedDrawTurnMs: DrawTurnDuration): void {
     const handleResult = (result: RoomActionResult): void => {
       if (!result.ok) {
         setError(result.message);
@@ -180,10 +214,11 @@ function App(): JSX.Element {
       setRoom(result.room);
       setError(null);
       setFeedback(null);
+      setDrawFeedback(null);
     };
 
     if (mode === 'create') {
-      socket.emit('room:create', { nickname: nextNickname }, handleResult);
+      socket.emit('room:create', { nickname: nextNickname, mode: gameMode, drawTurnMs: selectedDrawTurnMs }, handleResult);
     } else {
       socket.emit('room:join', { nickname: nextNickname, code }, handleResult);
     }
@@ -204,11 +239,11 @@ function App(): JSX.Element {
 
     setNickname(cleanNickname);
     setError(null);
-    const action = { mode: homeMode, nickname: cleanNickname, code: cleanCode };
+    const action = { mode: homeMode, nickname: cleanNickname, code: cleanCode, gameMode: selectedGame, drawTurnMs };
     setPendingAction(action);
     if (socket.connected) {
       setPendingAction(null);
-      emitRoomAction(action.mode, action.nickname, action.code);
+      emitRoomAction(action.mode, action.nickname, action.code, action.gameMode, action.drawTurnMs);
     } else {
       setConnection(serverMayHibernate ? 'waking' : 'connecting');
       socket.auth = {};
@@ -227,6 +262,7 @@ function App(): JSX.Element {
     event.preventDefault();
     if (!guess.trim() || me?.solved || room?.phase !== 'playing') return;
     setFeedback(null);
+    setDrawFeedback(null);
     socket.emit('round:guess', { text: guess });
   }
 
@@ -244,6 +280,7 @@ function App(): JSX.Element {
     setRoom(null);
     setFinalRanking([]);
     setFeedback(null);
+    setDrawFeedback(null);
     setError(null);
     setConnection('offline');
   }
@@ -285,15 +322,15 @@ function App(): JSX.Element {
 
         <section className="home-layout" aria-labelledby="home-title">
           <div className="home-intro">
-            <p className="eyebrow">Jogo de identidade em grupo</p>
-            <h1 id="home-title">Quem está<br />na sua<br />testa?</h1>
+            <p className="eyebrow">Duas brincadeiras · uma sala</p>
+            <h1 id="home-title">{selectedGame === 'whoami' ? <>Quem está<br />na sua<br />testa?</> : <>Quem é<br />o impostor?</>}</h1>
             <p className="home-lede">
-              Monte uma sala, distribua personagens e descubra quem você é sem olhar a sua própria carta.
+              {selectedGame === 'whoami' ? 'Monte uma sala, distribua personagens e descubra quem você é sem olhar a sua própria carta.' : 'Montem um mural em 10 segundos por pessoa, descubram o desenho e encontrem quem não recebeu a palavra.'}
             </p>
             <div className="intro-stamp" aria-label="Regras rápidas">
               <span>2–12 pessoas</span>
               <span>sem login</span>
-              <span>em tempo real</span>
+              <span>{selectedGame === 'whoami' ? 'em tempo real' : '10s por pessoa'}</span>
             </div>
           </div>
 
@@ -306,6 +343,20 @@ function App(): JSX.Element {
                 Entrar
               </button>
             </div>
+            {homeMode === 'create' ? (
+              <div className="game-picker" role="tablist" aria-label="Escolha o jogo">
+                <span className="micro-label">Escolha a brincadeira</span>
+                <div className="game-picker-grid">
+                  <button className={selectedGame === 'whoami' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('whoami'); setError(null); }} role="tab" aria-selected={selectedGame === 'whoami'}>
+                    <span className="game-choice-mark">Q?</span><span><strong>Quem Sou Eu</strong><small>personagens na testa</small></span><b aria-hidden="true">↗</b>
+                  </button>
+                  <button className={selectedGame === 'draw-impostor' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('draw-impostor'); setError(null); }} role="tab" aria-selected={selectedGame === 'draw-impostor'}>
+                    <span className="game-choice-mark draw-choice-mark">✎</span><span><strong>Quem é o impostor</strong><small>um mural · uma palavra</small></span><b aria-hidden="true">↗</b>
+                  </button>
+                </div>
+                {selectedGame === 'draw-impostor' && <label className="field-label game-duration-field" htmlFor="draw-duration">Tempo de cada vez<select id="draw-duration" className="select-input" value={drawTurnMs === null ? 'null' : String(drawTurnMs)} onChange={(event) => setDrawTurnMs(event.target.value === 'null' ? null : Number(event.target.value) as DrawTurnDuration)}><option value="10000">10 segundos</option><option value="20000">20 segundos</option><option value="30000">30 segundos</option><option value="60000">1 minuto</option><option value="null">Sem limite</option></select></label>}
+              </div>
+            ) : <p className="join-mode-note"><span aria-hidden="true">✦</span> O código já define qual jogo está esperando você.</p>}
             <form className="stack-form" onSubmit={handleHomeSubmit}>
               {homeMode === 'join' && (
                 <label className="field-label" htmlFor="room-code">
@@ -328,7 +379,7 @@ function App(): JSX.Element {
                 Acordando o servidor. No plano gratuito ele hiberna sem uso, e voltar leva cerca de um minuto.
               </InlineNotice>
             )}
-            <p className="privacy-note"><span aria-hidden="true">✦</span> Seu personagem nunca é enviado para a sua tela durante a rodada.</p>
+            <p className="privacy-note"><span aria-hidden="true">✦</span> {selectedGame === 'whoami' ? 'Seu personagem nunca é enviado para a sua tela durante a rodada.' : 'A palavra nunca é enviada para o impostor.'}</p>
           </div>
         </section>
 
@@ -347,9 +398,10 @@ function App(): JSX.Element {
         <RoomHeader room={room} connection={connection} onLeave={leaveRoom} elapsedMs={elapsedMs} />
         <section className="lobby-layout" aria-labelledby="lobby-title">
           <div className="lobby-main">
-            <p className="eyebrow">Sala aberta · aguardando todo mundo</p>
-            <h1 id="lobby-title">Preparem as testas.</h1>
-            <p className="section-lede">Quando todas as pessoas marcarem OK, cada uma recebe uma identidade que só as outras conseguem ver.</p>
+            <p className="eyebrow">Sala aberta · {room.mode === 'whoami' ? 'Quem Sou Eu' : 'Quem é o impostor'}</p>
+            <h1 id="lobby-title">{room.mode === 'whoami' ? 'Preparem as testas.' : 'Preparem o mural.'}</h1>
+            <p className="section-lede">{room.mode === 'whoami' ? 'Quando todas as pessoas marcarem OK, cada uma recebe uma identidade que só as outras conseguem ver.' : `Quando todo mundo marcar OK, cada pessoa desenha por ${formatDrawDuration(room.drawTurnMs)}. Uma delas não vai saber o que fazer.`}</p>
+            <div className="lobby-mode-note"><span className="lobby-mode-mark">{room.mode === 'whoami' ? 'Q?' : '✎'}</span><div><strong>{room.mode === 'whoami' ? 'Personagens na testa' : 'Quem é o impostor'}</strong><span>{room.mode === 'whoami' ? 'Acerte o que está na sua carta.' : `${formatDrawDuration(room.drawTurnMs)} por pessoa · passe a vez quando terminar.`}</span></div></div>
             <div className="room-code-card">
               <div>
                 <span className="micro-label">Código para compartilhar</span>
@@ -387,6 +439,15 @@ function App(): JSX.Element {
     );
   }
 
+  if (room.mode === 'draw-impostor' && room.phase === 'finished') {
+    return (
+      <main className="app-shell room-shell finish-shell">
+        <RoomHeader room={room} connection={connection} onLeave={leaveRoom} />
+        <DrawingFinish room={room} onPlayAgain={playAgain} isHost={isHost} />
+      </main>
+    );
+  }
+
   if (room.phase === 'finished') {
     return (
       <main className="app-shell room-shell finish-shell">
@@ -419,6 +480,15 @@ function App(): JSX.Element {
             </div>
           </div>
         </section>
+      </main>
+    );
+  }
+
+  if (room.mode === 'draw-impostor') {
+    return (
+      <main className="app-shell room-shell game-shell draw-game-shell">
+        <RoomHeader room={room} connection={connection} onLeave={leaveRoom} />
+        <DrawingRound room={room} feedback={drawFeedback} onFeedback={setDrawFeedback} />
       </main>
     );
   }
@@ -526,13 +596,19 @@ function Logo(): JSX.Element {
   return <div className="logo" aria-label="Quem Sou Eu"><span className="logo-mark">Q?</span><span className="logo-word">QUEM<br /><b>SOU EU</b></span></div>;
 }
 
+function formatDrawDuration(duration: DrawTurnDuration): string {
+  if (duration === null) return 'sem limite';
+  if (duration >= 60_000 && duration % 60_000 === 0) return `${duration / 60_000} minuto${duration === 60_000 ? '' : 's'}`;
+  return `${duration / 1_000} segundos`;
+}
+
 function ConnectionPill({ state }: { state: ConnectionState }): JSX.Element {
   const labels: Record<ConnectionState, string> = { offline: 'desconectado', connecting: 'conectando', waking: 'acordando servidor', online: 'ao vivo', reconnecting: 'reconectando' };
   return <span className={`connection-pill connection-${state}`}><span className="connection-dot" aria-hidden="true" />{labels[state]}</span>;
 }
 
-function RoomHeader({ room, connection, onLeave, elapsedMs }: { room: RoomView; connection: ConnectionState; onLeave: () => void; elapsedMs: number | null }): JSX.Element {
-  return <header className="topbar room-topbar"><Logo /><div className="room-meta"><span className="room-meta-label">sala</span><strong>{room.code}</strong><span className="room-round">R{String(room.round).padStart(2, '0')}</span>{elapsedMs !== null && <span className="round-clock" aria-label="Tempo decorrido da rodada">{formatDuration(elapsedMs)}</span>}</div><div className="topbar-actions"><ConnectionPill state={connection} /><button className="text-button" type="button" onClick={onLeave}>Sair</button></div></header>;
+function RoomHeader({ room, connection, onLeave, elapsedMs }: { room: RoomView; connection: ConnectionState; onLeave: () => void; elapsedMs?: number | null }): JSX.Element {
+  return <header className="topbar room-topbar"><Logo /><div className="room-meta"><span className="room-meta-label">sala</span><strong>{room.code}</strong><span className="room-round">R{String(room.round).padStart(2, '0')}</span><span className="room-game">{room.mode === 'whoami' ? 'Q?' : '✎'}</span>{elapsedMs !== null && elapsedMs !== undefined && <span className="round-clock" aria-label="Tempo decorrido da rodada">{formatDuration(elapsedMs)}</span>}</div><div className="topbar-actions"><ConnectionPill state={connection} /><button className="text-button" type="button" onClick={onLeave}>Sair</button></div></header>;
 }
 
 /**
