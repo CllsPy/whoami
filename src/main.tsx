@@ -14,8 +14,14 @@ function readClientService(): ClientService {
     : 'all';
 }
 
+const service = readClientService();
+const legacyCaracolRoute = service === 'all' && new URLSearchParams(window.location.search).get('game') === 'caracol';
+
+if (legacyCaracolRoute) {
+  window.location.replace(import.meta.env.VITE_CARACOL_URL || 'https://caracol.gamegamegame.site/');
+}
+
 function DedicatedEntry(): JSX.Element {
-  const service = readClientService();
   if (service === 'lobby') return <LobbyApp />;
   if (service === 'caracol') {
     return <CaracolGame onExit={() => { window.location.href = import.meta.env.VITE_LOBBY_URL || '/'; }} />;

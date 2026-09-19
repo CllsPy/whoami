@@ -9,9 +9,15 @@ type LobbyGame = {
   tone: string;
 };
 
+const DEFAULT_GAME_URLS = {
+  whoami: 'https://whoami.gamegamegame.site/',
+  impostor: 'https://impostor.gamegamegame.site/',
+  caracol: 'https://caracol.gamegamegame.site/',
+} as const;
+
 const games: LobbyGame[] = [
   {
-    href: import.meta.env.VITE_WHOAMI_URL || '/whoami',
+    href: import.meta.env.VITE_WHOAMI_URL || DEFAULT_GAME_URLS.whoami,
     mark: 'Q?',
     title: 'Quem Sou Eu',
     description: 'Descubra o personagem que todo mundo já enxerga — menos você.',
@@ -19,7 +25,7 @@ const games: LobbyGame[] = [
     tone: 'lobby-game-whoami',
   },
   {
-    href: import.meta.env.VITE_IMPOSTOR_URL || '/impostor',
+    href: import.meta.env.VITE_IMPOSTOR_URL || DEFAULT_GAME_URLS.impostor,
     mark: '✎',
     title: 'Quem é o impostor',
     description: 'Uma palavra, um mural e uma pessoa tentando acompanhar a turma.',
@@ -27,7 +33,7 @@ const games: LobbyGame[] = [
     tone: 'lobby-game-impostor',
   },
   {
-    href: import.meta.env.VITE_CARACOL_URL || '/caracol',
+    href: import.meta.env.VITE_CARACOL_URL || DEFAULT_GAME_URLS.caracol,
     mark: '🐌',
     title: 'Caracol',
     description: 'Escolha uma cidade, junte moedas e não deixe o mapa te alcançar.',
