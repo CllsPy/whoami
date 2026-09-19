@@ -4,6 +4,7 @@ import type { Server, Socket } from 'socket.io';
 import {
   type CaracolActionResult,
   type CaracolActionFailure,
+  CARACOL_COSMETIC_CATALOG,
   type CaracolDeathPayload,
   type CaracolHistoryInput,
   type CaracolHistoryResult,
@@ -13,6 +14,10 @@ import {
   type CaracolRegisterInput,
   type CaracolResumeInput,
   type CaracolSelectCityInput,
+  type CaracolCosmeticSlot,
+  type CaracolCosmeticWearer,
+  type CaracolShopEquipInput,
+  type CaracolShopPurchaseInput,
   type CaracolStateView,
   type CaracolVisibilityInput,
   CARACOL_BASE_SPEED_KMH,
@@ -24,6 +29,7 @@ import {
   CARACOL_ONLINE_COINS_PER_INTERVAL,
   CARACOL_REDIRECT_COST,
   CARACOL_STARTING_COINS,
+  emptyCaracolOutfit,
   type CaracolCity,
 } from '../../shared/caracol';
 import type {
@@ -80,6 +86,7 @@ export class CaracolGameManager {
   private world!: CaracolWorldRecord;
   private tickTimer: NodeJS.Timeout | null = null;
   private tickInFlight = false;
+  private shopMutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly io: CaracolIo, options: CaracolManagerOptions = {}) {
     this.store = options.store ?? createCaracolStore();
@@ -120,6 +127,8 @@ export class CaracolGameManager {
     socket.on('caracol:redirect', (payload, ack) => { void this.afterReady(() => this.redirect(socket, payload, ack)); });
     socket.on('caracol:buy-speed', (ack) => { void this.afterReady(() => this.buySpeed(socket, ack)); });
     socket.on('caracol:buy-discount', (ack) => { void this.afterReady(() => this.buyDiscount(socket, ack)); });
+    socket.on('caracol:shop-purchase', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopPurchase(socket, payload, ack))); });
+    socket.on('caracol:shop-equip', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopEquip(socket, payload, ack))); });
     socket.on('caracol:visibility', (payload) => { void this.afterReady(() => this.setVisibility(socket, payload)); });
     socket.on('caracol:push-subscribe', (payload, ack) => { void this.afterReady(() => this.subscribePush(socket, payload, ack)); });
     socket.on('caracol:push-unsubscribe', (payload, ack) => { void this.afterReady(() => this.unsubscribePush(socket, payload, ack)); });
@@ -181,6 +190,8 @@ export class CaracolGameManager {
         cityLat: null,
         cityLon: null,
         speedDiscountLevel: 0,
+        cosmeticOwnedItemIds: [],
+        cosmeticOutfit: emptyCaracolOutfit(),
         lastCoinAccruedAt: now,
       });
       const runtime = this.addRuntimeAccount(account);
@@ -392,6 +403,78 @@ export class CaracolGameManager {
     this.broadcastState();
   }
 
+  private enqueueShopMutation(work: () => Promise<void>): Promise<void> {
+    const next = this.shopMutationQueue.then(work, work);
+    this.shopMutationQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async shopPurchase(socket: CaracolSocket, payload: CaracolShopPurchaseInput, ack: (result: CaracolActionResult) => void): Promise<void> {
+    const account = this.authenticatedAccount(socket, ack);
+    if (!account) return;
+    const wearer = this.validCosmeticWearer(payload?.wearer);
+    const item = this.cosmeticItem(payload?.itemId);
+    if (!wearer || !item) {
+      ack(this.failure('INVALID_COSMETIC', 'Essa peça não existe na loja.'));
+      return;
+    }
+
+    await this.settleCoins(account);
+    const ownedItemIds = wearer === 'player' ? account.cosmeticOwnedItemIds : this.world.snailCosmeticOwnedItemIds;
+    if (ownedItemIds.includes(item.id)) {
+      ack(this.failure('COSMETIC_ALREADY_OWNED', 'Essa peça já está no guarda-roupa.'));
+      return;
+    }
+    if (account.coins < item.price) {
+      ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${item.price} moedas para comprar ${item.name}.`));
+      return;
+    }
+
+    account.coins -= item.price;
+    ownedItemIds.push(item.id);
+    if (wearer === 'player') account.cosmeticOutfit[item.slot] = item.id;
+    else this.world.snailCosmeticOutfit[item.slot] = item.id;
+    await this.store.saveCosmeticState(account, this.world, wearer);
+    await this.recordHistory({
+      type: 'shop',
+      message: `${account.nickname} comprou ${item.name} para ${wearer === 'player' ? 'si' : 'o caracol'} por ${item.price} moedas.`,
+      actorNickname: account.nickname,
+      targetNickname: wearer === 'snail' ? 'Caracol' : null,
+      amount: item.price,
+      createdAt: this.clock(),
+    });
+    this.ioNotice('shop', `${account.nickname} vestiu ${wearer === 'player' ? 'o próprio personagem' : 'o caracol'} com ${item.name}.`);
+    ack({ ok: true, state: this.stateFor(account) });
+    this.broadcastState();
+  }
+
+  private async shopEquip(socket: CaracolSocket, payload: CaracolShopEquipInput, ack: (result: CaracolActionResult) => void): Promise<void> {
+    const account = this.authenticatedAccount(socket, ack);
+    if (!account) return;
+    const wearer = this.validCosmeticWearer(payload?.wearer);
+    const slot = this.validCosmeticSlot(payload?.slot);
+    if (!wearer || !slot) {
+      ack(this.failure('INVALID_COSMETIC', 'Essa categoria não existe na loja.'));
+      return;
+    }
+
+    const itemId = payload?.itemId;
+    if (itemId !== null) {
+      const item = this.cosmeticItem(itemId);
+      const ownedItemIds = wearer === 'player' ? account.cosmeticOwnedItemIds : this.world.snailCosmeticOwnedItemIds;
+      if (!item || item.slot !== slot || !ownedItemIds.includes(item.id)) {
+        ack(this.failure('COSMETIC_NOT_OWNED', 'Compre essa peça antes de equipá-la.'));
+        return;
+      }
+    }
+
+    if (wearer === 'player') account.cosmeticOutfit[slot] = itemId;
+    else this.world.snailCosmeticOutfit[slot] = itemId;
+    await this.store.saveCosmeticState(account, this.world, wearer);
+    ack({ ok: true, state: this.stateFor(account) });
+    this.broadcastState();
+  }
+
   private async setVisibility(socket: CaracolSocket, payload: CaracolVisibilityInput): Promise<void> {
     const account = this.authenticatedAccount(socket);
     if (!account) return;
@@ -447,7 +530,6 @@ export class CaracolGameManager {
     account.sockets.add(socket.id);
     account.visibleSockets.add(socket.id);
     socket.data.caracolAccountId = account.id;
-    if (gainedIntervals) await this.recordCoinHistory(account, gainedIntervals, wasOnline);
   }
 
   private issueSession(socket: CaracolSocket, account: RuntimeAccount): string {
@@ -483,7 +565,6 @@ export class CaracolGameManager {
     account.visibleSockets.delete(socket.id);
     delete socket.data.caracolAccountId;
     if (persist && gainedIntervals) await this.store.saveAccount(account);
-    if (gainedIntervals) await this.recordCoinHistory(account, gainedIntervals, true);
   }
 
   private authenticatedAccount(socket: CaracolSocket, ack?: (result: CaracolActionResult) => void): RuntimeAccount | null {
@@ -516,6 +597,18 @@ export class CaracolGameManager {
     account.cityUf = city.uf;
     account.cityLat = city.lat;
     account.cityLon = city.lon;
+  }
+
+  private validCosmeticWearer(value: unknown): CaracolCosmeticWearer | null {
+    return value === 'player' || value === 'snail' ? value : null;
+  }
+
+  private validCosmeticSlot(value: unknown): CaracolCosmeticSlot | null {
+    return value === 'pants' || value === 'shirt' || value === 'watch' || value === 'glasses' || value === 'cap' ? value : null;
+  }
+
+  private cosmeticItem(value: unknown) {
+    return typeof value === 'string' ? CARACOL_COSMETIC_CATALOG.find((item) => item.id === value) ?? null : null;
   }
 
   private cityFor(account: CaracolAccountRecord): CaracolCity | null {
@@ -585,7 +678,6 @@ export class CaracolGameManager {
       const gainedIntervals = this.accrueCoins(account, now, true);
       if (gainedIntervals) {
         await this.store.saveAccount(account);
-        await this.recordCoinHistory(account, gainedIntervals, true);
       }
     }
 
@@ -676,7 +768,7 @@ export class CaracolGameManager {
     });
   }
 
-  private ioNotice(code: 'speed' | 'redirected' | 'discount' | 'death', message: string): void {
+  private ioNotice(code: 'speed' | 'redirected' | 'discount' | 'death' | 'shop', message: string): void {
     for (const socket of this.sockets.values()) {
       if (socket.data.caracolAccountId) socket.emit('caracol:notice', { code, message });
     }
@@ -693,18 +785,6 @@ export class CaracolGameManager {
       if (socket.data.caracolAccountId) socket.emit('caracol:history-added', entry);
     }
     return entry;
-  }
-
-  private async recordCoinHistory(account: RuntimeAccount, intervals: number, online: boolean): Promise<void> {
-    const amount = intervals * (online ? CARACOL_ONLINE_COINS_PER_INTERVAL : CARACOL_OFFLINE_COINS_PER_INTERVAL);
-    await this.recordHistory({
-      type: 'coins',
-      message: `${account.nickname} ganhou ${amount} moeda${amount === 1 ? '' : 's'} (${online ? 'presença online' : 'tempo offline'}).`,
-      actorNickname: account.nickname,
-      targetNickname: null,
-      amount,
-      createdAt: this.clock(),
-    });
   }
 
   private stateFor(account: RuntimeAccount): CaracolStateView {
@@ -726,6 +806,7 @@ export class CaracolGameManager {
           distanceKm: distance,
           etaMs: distance === null ? null : distance / speed * 3_600_000,
           redirectCost: this.redirectCost(account.speedDiscountLevel),
+          outfit: { ...this.world.snailCosmeticOutfit },
         },
         serverNow: this.clock(),
       },
@@ -738,6 +819,7 @@ export class CaracolGameManager {
           city: this.cityFor(candidate)!,
           online: candidate.sockets.size > 0,
           isYou: candidate.id === account.id,
+          outfit: { ...candidate.cosmeticOutfit },
         })),
       you: {
         accountId: account.id,
@@ -746,6 +828,17 @@ export class CaracolGameManager {
         coins: account.coins,
         city: this.cityFor(account),
         speedDiscountLevel: account.speedDiscountLevel,
+      },
+      shop: {
+        catalog: CARACOL_COSMETIC_CATALOG.map((item) => ({ ...item })),
+        player: {
+          ownedItemIds: [...account.cosmeticOwnedItemIds],
+          outfit: { ...account.cosmeticOutfit },
+        },
+        snail: {
+          ownedItemIds: [...this.world.snailCosmeticOwnedItemIds],
+          outfit: { ...this.world.snailCosmeticOutfit },
+        },
       },
       needsCity: !account.alive || !account.cityId,
       pushPublicKey: this.push.getPublicKey(),
@@ -774,7 +867,6 @@ export class CaracolGameManager {
     const gainedIntervals = this.accrueCoins(account, this.clock(), online);
     if (!gainedIntervals) return;
     await this.store.saveAccount(account);
-    await this.recordCoinHistory(account, gainedIntervals, online);
   }
 
   private failure(code: string, message: string): CaracolActionFailure {
