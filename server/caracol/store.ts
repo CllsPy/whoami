@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolConfig } from 'pg';
-import type { CaracolHistoryEntry, CaracolHistoryType } from '../../shared/caracol';
+import {
+  emptyCaracolOutfit,
+  type CaracolHistoryEntry,
+  type CaracolHistoryType,
+  type CaracolCosmeticWearer,
+  type CaracolOutfit,
+} from '../../shared/caracol';
 import {
   CARACOL_BASE_SPEED_KMH,
   CARACOL_BRAZILIA,
@@ -20,6 +26,8 @@ export interface CaracolAccountRecord {
   cityLat: number | null;
   cityLon: number | null;
   speedDiscountLevel: number;
+  cosmeticOwnedItemIds: string[];
+  cosmeticOutfit: CaracolOutfit;
   lastCoinAccruedAt: number;
   createdAt: number;
   updatedAt: number;
@@ -31,6 +39,8 @@ export interface CaracolWorldRecord {
   speedLevel: number;
   redirectLevel: number;
   targetAccountId: string | null;
+  snailCosmeticOwnedItemIds: string[];
+  snailCosmeticOutfit: CaracolOutfit;
   lastTickAt: number;
 }
 
@@ -64,6 +74,7 @@ export interface CaracolStore {
   createAccount(input: Omit<CaracolAccountRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<CaracolAccountRecord>;
   saveAccount(account: CaracolAccountRecord): Promise<void>;
   saveWorld(world: CaracolWorldRecord): Promise<void>;
+  saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void>;
   appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord>;
   listHistory(input: { beforeId?: string | null; limit: number }): Promise<{
     entries: CaracolHistoryRecord[];
@@ -84,16 +95,18 @@ function initialWorld(now = Date.now()): CaracolWorldRecord {
     speedLevel: 0,
     redirectLevel: 0,
     targetAccountId: null,
+    snailCosmeticOwnedItemIds: [],
+    snailCosmeticOutfit: emptyCaracolOutfit(),
     lastTickAt: now,
   };
 }
 
 function cloneAccount(account: CaracolAccountRecord): CaracolAccountRecord {
-  return { ...account };
+  return { ...account, cosmeticOwnedItemIds: [...account.cosmeticOwnedItemIds], cosmeticOutfit: { ...account.cosmeticOutfit } };
 }
 
 function cloneWorld(world: CaracolWorldRecord): CaracolWorldRecord {
-  return { ...world };
+  return { ...world, snailCosmeticOwnedItemIds: [...world.snailCosmeticOwnedItemIds], snailCosmeticOutfit: { ...world.snailCosmeticOutfit } };
 }
 
 function clonePush(subscription: CaracolPushRecord): CaracolPushRecord {
@@ -114,6 +127,8 @@ CREATE TABLE IF NOT EXISTS caracol_accounts (
   city_lat DOUBLE PRECISION,
   city_lon DOUBLE PRECISION,
   speed_discount_level INTEGER NOT NULL DEFAULT 0,
+  cosmetic_owned_item_ids TEXT[] NOT NULL DEFAULT '{}',
+  cosmetic_outfit JSONB NOT NULL DEFAULT '{}'::JSONB,
   last_coin_accrued_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -133,6 +148,8 @@ CREATE TABLE IF NOT EXISTS caracol_world (
   speed_level INTEGER NOT NULL DEFAULT 0,
   redirect_level INTEGER NOT NULL DEFAULT 0,
   target_account_id TEXT REFERENCES caracol_accounts(id) ON DELETE SET NULL,
+  snail_cosmetic_owned_item_ids TEXT[] NOT NULL DEFAULT '{}',
+  snail_cosmetic_outfit JSONB NOT NULL DEFAULT '{}'::JSONB,
   last_tick_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -178,6 +195,8 @@ function accountFromRow(row: Record<string, unknown>): CaracolAccountRecord {
     cityLat: row.city_lat === null ? null : Number(row.city_lat),
     cityLon: row.city_lon === null ? null : Number(row.city_lon),
     speedDiscountLevel: Number(row.speed_discount_level),
+    cosmeticOwnedItemIds: Array.isArray(row.cosmetic_owned_item_ids) ? row.cosmetic_owned_item_ids.map(String) : [],
+    cosmeticOutfit: outfitFromValue(row.cosmetic_outfit),
     lastCoinAccruedAt: new Date(String(row.last_coin_accrued_at)).getTime(),
     createdAt: new Date(String(row.created_at)).getTime(),
     updatedAt: new Date(String(row.updated_at)).getTime(),
@@ -191,8 +210,20 @@ function worldFromRow(row: Record<string, unknown>): CaracolWorldRecord {
     speedLevel: Number(row.speed_level),
     redirectLevel: Number(row.redirect_level ?? 0),
     targetAccountId: row.target_account_id === null ? null : String(row.target_account_id),
+    snailCosmeticOwnedItemIds: Array.isArray(row.snail_cosmetic_owned_item_ids) ? row.snail_cosmetic_owned_item_ids.map(String) : [],
+    snailCosmeticOutfit: outfitFromValue(row.snail_cosmetic_outfit),
     lastTickAt: new Date(String(row.last_tick_at)).getTime(),
   };
+}
+
+function outfitFromValue(value: unknown): CaracolOutfit {
+  const outfit = emptyCaracolOutfit();
+  if (!value || typeof value !== 'object') return outfit;
+  for (const slot of Object.keys(outfit) as Array<keyof CaracolOutfit>) {
+    const itemId = (value as Record<string, unknown>)[slot];
+    outfit[slot] = typeof itemId === 'string' && itemId.length > 0 ? itemId : null;
+  }
+  return outfit;
 }
 
 function historyFromRow(row: Record<string, unknown>): CaracolHistoryRecord {
@@ -257,6 +288,11 @@ export class MemoryCaracolStore implements CaracolStore {
     this.world = cloneWorld(world);
   }
 
+  async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
+    await this.saveAccount(account);
+    if (wearer === 'snail') this.world = cloneWorld(world);
+  }
+
   async appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord> {
     const entry = { ...input, id: String(this.nextHistoryId++) };
     this.history.push({ ...entry });
@@ -301,6 +337,10 @@ export class PgCaracolStore implements CaracolStore {
 
   async initialize(): Promise<void> {
     await this.pool.query(schemaSql);
+    await this.pool.query("ALTER TABLE caracol_accounts ADD COLUMN IF NOT EXISTS cosmetic_owned_item_ids TEXT[] NOT NULL DEFAULT '{}' ");
+    await this.pool.query("ALTER TABLE caracol_accounts ADD COLUMN IF NOT EXISTS cosmetic_outfit JSONB NOT NULL DEFAULT '{}'::JSONB");
+    await this.pool.query("ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS snail_cosmetic_owned_item_ids TEXT[] NOT NULL DEFAULT '{}' ");
+    await this.pool.query("ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS snail_cosmetic_outfit JSONB NOT NULL DEFAULT '{}'::JSONB");
     await this.pool.query('ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS redirect_level INTEGER NOT NULL DEFAULT 0');
     await this.pool.query(
       `INSERT INTO caracol_world (id, snail_lat, snail_lon, speed_level, redirect_level, last_tick_at)
@@ -330,13 +370,14 @@ export class PgCaracolStore implements CaracolStore {
         `INSERT INTO caracol_accounts (
           id, nickname, normalized_nickname, password_hash, coins, alive,
           city_id, city_name, city_uf, city_lat, city_lon,
-          speed_discount_level, last_coin_accrued_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TO_TIMESTAMP($13 / 1000.0))
+          speed_discount_level, cosmetic_owned_item_ids, cosmetic_outfit, last_coin_accrued_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TO_TIMESTAMP($15 / 1000.0))
         RETURNING *`,
         [
           randomUUID(), input.nickname, input.normalizedNickname, input.passwordHash,
           input.coins, input.alive, input.cityId, input.cityName, input.cityUf,
-          input.cityLat, input.cityLon, input.speedDiscountLevel, input.lastCoinAccruedAt,
+          input.cityLat, input.cityLon, input.speedDiscountLevel, input.cosmeticOwnedItemIds,
+          JSON.stringify(input.cosmeticOutfit), input.lastCoinAccruedAt,
         ],
       );
       return accountFromRow(result.rows[0] as Record<string, unknown>);
@@ -353,19 +394,48 @@ export class PgCaracolStore implements CaracolStore {
       `UPDATE caracol_accounts SET
         coins = $2, alive = $3, city_id = $4, city_name = $5, city_uf = $6,
         city_lat = $7, city_lon = $8, speed_discount_level = $9,
-        last_coin_accrued_at = TO_TIMESTAMP($10 / 1000.0), updated_at = NOW()
+        cosmetic_owned_item_ids = $10, cosmetic_outfit = $11,
+        last_coin_accrued_at = TO_TIMESTAMP($12 / 1000.0), updated_at = NOW()
        WHERE id = $1`,
-      [account.id, account.coins, account.alive, account.cityId, account.cityName, account.cityUf, account.cityLat, account.cityLon, account.speedDiscountLevel, account.lastCoinAccruedAt],
+      [account.id, account.coins, account.alive, account.cityId, account.cityName, account.cityUf, account.cityLat, account.cityLon, account.speedDiscountLevel, account.cosmeticOwnedItemIds, JSON.stringify(account.cosmeticOutfit), account.lastCoinAccruedAt],
     );
   }
 
   async saveWorld(world: CaracolWorldRecord): Promise<void> {
     await this.pool.query(
       `UPDATE caracol_world SET snail_lat = $2, snail_lon = $3, speed_level = $4,
-        redirect_level = $5, target_account_id = $6, last_tick_at = TO_TIMESTAMP($7 / 1000.0), updated_at = NOW()
+        redirect_level = $5, target_account_id = $6, snail_cosmetic_owned_item_ids = $7,
+        snail_cosmetic_outfit = $8, last_tick_at = TO_TIMESTAMP($9 / 1000.0), updated_at = NOW()
        WHERE id = $1`,
-      [WORLD_ID, world.snailLat, world.snailLon, world.speedLevel, world.redirectLevel, world.targetAccountId, world.lastTickAt],
+      [WORLD_ID, world.snailLat, world.snailLon, world.speedLevel, world.redirectLevel, world.targetAccountId, world.snailCosmeticOwnedItemIds, JSON.stringify(world.snailCosmeticOutfit), world.lastTickAt],
     );
+  }
+
+  async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE caracol_accounts SET
+          coins = $2, cosmetic_owned_item_ids = $3, cosmetic_outfit = $4, updated_at = NOW()
+         WHERE id = $1`,
+        [account.id, account.coins, account.cosmeticOwnedItemIds, JSON.stringify(account.cosmeticOutfit)],
+      );
+      if (wearer === 'snail') {
+        await client.query(
+          `UPDATE caracol_world SET snail_cosmetic_owned_item_ids = $2,
+            snail_cosmetic_outfit = $3, updated_at = NOW()
+           WHERE id = $1`,
+          [WORLD_ID, world.snailCosmeticOwnedItemIds, JSON.stringify(world.snailCosmeticOutfit)],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord> {

@@ -16,6 +16,53 @@ export const CARACOL_BRAZILIA: BrazilianCity = {
   lon: -47.9297,
 };
 
+export const CARACOL_COSMETIC_SLOTS = ['pants', 'shirt', 'watch', 'glasses', 'cap'] as const;
+export type CaracolCosmeticSlot = typeof CARACOL_COSMETIC_SLOTS[number];
+export type CaracolCosmeticWearer = 'player' | 'snail';
+
+export interface CaracolCosmeticItem {
+  id: string;
+  slot: CaracolCosmeticSlot;
+  name: string;
+  price: number;
+  tier: 1 | 2 | 3;
+}
+
+export const CARACOL_COSMETIC_CATALOG: readonly CaracolCosmeticItem[] = [
+  { id: 'pants-jeans', slot: 'pants', name: 'Jeans', price: 25, tier: 1 },
+  { id: 'pants-cargo', slot: 'pants', name: 'Cargo', price: 50, tier: 2 },
+  { id: 'pants-neon-race', slot: 'pants', name: 'Corrida neon', price: 100, tier: 3 },
+  { id: 'shirt-basic', slot: 'shirt', name: 'Básica', price: 25, tier: 1 },
+  { id: 'shirt-striped', slot: 'shirt', name: 'Listrada', price: 50, tier: 2 },
+  { id: 'shirt-tropical', slot: 'shirt', name: 'Tropical', price: 100, tier: 3 },
+  { id: 'watch-digital', slot: 'watch', name: 'Digital', price: 25, tier: 1 },
+  { id: 'watch-gold', slot: 'watch', name: 'Dourado', price: 50, tier: 2 },
+  { id: 'watch-holographic', slot: 'watch', name: 'Holográfico', price: 100, tier: 3 },
+  { id: 'glasses-round', slot: 'glasses', name: 'Redondos', price: 25, tier: 1 },
+  { id: 'glasses-dark', slot: 'glasses', name: 'Escuros', price: 50, tier: 2 },
+  { id: 'glasses-neon-visor', slot: 'glasses', name: 'Visor neon', price: 100, tier: 3 },
+  { id: 'cap-flat', slot: 'cap', name: 'Aba reta', price: 25, tier: 1 },
+  { id: 'cap-trucker', slot: 'cap', name: 'Trucker', price: 50, tier: 2 },
+  { id: 'cap-bucket', slot: 'cap', name: 'Bucket', price: 100, tier: 3 },
+];
+
+export type CaracolOutfit = Record<CaracolCosmeticSlot, string | null>;
+
+export function emptyCaracolOutfit(): CaracolOutfit {
+  return { pants: null, shirt: null, watch: null, glasses: null, cap: null };
+}
+
+export interface CaracolWardrobeView {
+  ownedItemIds: string[];
+  outfit: CaracolOutfit;
+}
+
+export interface CaracolShopView {
+  catalog: CaracolCosmeticItem[];
+  player: CaracolWardrobeView;
+  snail: CaracolWardrobeView;
+}
+
 export interface CaracolCity {
   id: string;
   name: string;
@@ -30,6 +77,7 @@ export interface CaracolPlayerView {
   city: CaracolCity;
   online: boolean;
   isYou: boolean;
+  outfit: CaracolOutfit;
 }
 
 export interface CaracolYouView {
@@ -53,6 +101,7 @@ export interface CaracolWorldView {
     distanceKm: number | null;
     etaMs: number | null;
     redirectCost: number;
+    outfit: CaracolOutfit;
   };
   serverNow: number;
 }
@@ -61,6 +110,7 @@ export interface CaracolStateView {
   world: CaracolWorldView;
   players: CaracolPlayerView[];
   you: CaracolYouView;
+  shop: CaracolShopView;
   needsCity: boolean;
   pushPublicKey: string | null;
 }
@@ -87,6 +137,17 @@ export interface CaracolRedirectInput {
   targetNickname: string;
 }
 
+export interface CaracolShopPurchaseInput {
+  wearer: CaracolCosmeticWearer;
+  itemId: string;
+}
+
+export interface CaracolShopEquipInput {
+  wearer: CaracolCosmeticWearer;
+  slot: CaracolCosmeticSlot;
+  itemId: string | null;
+}
+
 export interface CaracolVisibilityInput {
   visible: boolean;
 }
@@ -109,7 +170,8 @@ export type CaracolHistoryType =
   | 'discount'
   | 'target'
   | 'approaching'
-  | 'death';
+  | 'death'
+  | 'shop';
 
 export interface CaracolHistoryEntry {
   id: string;
@@ -162,6 +224,6 @@ export interface CaracolDeathPayload {
 }
 
 export interface CaracolNoticePayload {
-  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount';
+  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount' | 'shop';
   message: string;
 }

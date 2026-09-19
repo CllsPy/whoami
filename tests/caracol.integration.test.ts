@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as createClient, type Socket } from 'socket.io-client';
 import { Server } from 'socket.io';
 import type { ClientToServerEvents, InterServerEvents, ServerToClientEvents, SocketData } from '../shared/protocol';
-import type { CaracolActionResult, CaracolHistoryResult, CaracolStateView } from '../shared/caracol';
+import type { CaracolActionResult, CaracolCosmeticSlot, CaracolCosmeticWearer, CaracolHistoryResult, CaracolStateView } from '../shared/caracol';
 import { createCaracolManager, type CaracolGameManager } from '../server/caracol/game';
 import { MemoryCaracolStore } from '../server/caracol/store';
 
@@ -97,6 +97,14 @@ function buyDiscount(client: TestSocket): Promise<CaracolActionResult> {
 
 function redirect(client: TestSocket, targetNickname: string): Promise<CaracolActionResult> {
   return new Promise((resolve) => client.emit('caracol:redirect', { targetNickname }, resolve));
+}
+
+function purchaseCosmetic(client: TestSocket, wearer: CaracolCosmeticWearer, itemId: string): Promise<CaracolActionResult> {
+  return new Promise((resolve) => client.emit('caracol:shop-purchase', { wearer, itemId }, resolve));
+}
+
+function equipCosmetic(client: TestSocket, wearer: CaracolCosmeticWearer, slot: CaracolCosmeticSlot, itemId: string | null): Promise<CaracolActionResult> {
+  return new Promise((resolve) => client.emit('caracol:shop-equip', { wearer, slot, itemId }, resolve));
 }
 
 function history(client: TestSocket, beforeId: string | null = null): Promise<CaracolHistoryResult> {
@@ -287,5 +295,124 @@ describe('mundo global do Caracol', () => {
       expect(secondPage.entries.length).toBeGreaterThan(0);
       expect(secondPage.entries.every((entry) => !firstPage.entries.some((first) => first.id === entry.id))).toBe(true);
     }
+  });
+
+  it('oferece quinze cosméticos, cobra uma vez e registra somente o gasto', async () => {
+    const harness = await createHarness();
+    const player = await connectClient(harness.address);
+    const created = await register(player, 'Estiloso');
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(created.state.shop.catalog).toHaveLength(15);
+    const counts = created.state.shop.catalog.reduce<Record<string, number>>((result, item) => {
+      result[item.slot] = (result[item.slot] ?? 0) + 1;
+      return result;
+    }, {});
+    expect(counts).toEqual({ pants: 3, shirt: 3, watch: 3, glasses: 3, cap: 3 });
+    expect(created.state.shop.catalog.filter((item) => item.slot === 'pants').map((item) => item.price)).toEqual([25, 50, 100]);
+
+    const insufficient = await purchaseCosmetic(player, 'player', 'pants-jeans');
+    expect(insufficient.ok).toBe(false);
+    if (!insufficient.ok) expect(insufficient.code).toBe('INSUFFICIENT_COINS');
+
+    harness.now.value += 20_000;
+    const purchased = await purchaseCosmetic(player, 'player', 'pants-jeans');
+    expect(purchased.ok).toBe(true);
+    if (!purchased.ok) return;
+    expect(purchased.state.you.coins).toBe(0);
+    expect(purchased.state.shop.player.ownedItemIds).toContain('pants-jeans');
+    expect(purchased.state.shop.player.outfit.pants).toBe('pants-jeans');
+
+    const duplicate = await purchaseCosmetic(player, 'player', 'pants-jeans');
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.code).toBe('COSMETIC_ALREADY_OWNED');
+
+    const wrongSlot = await equipCosmetic(player, 'player', 'shirt', 'pants-jeans');
+    expect(wrongSlot.ok).toBe(false);
+    if (!wrongSlot.ok) expect(wrongSlot.code).toBe('COSMETIC_NOT_OWNED');
+
+    const removed = await equipCosmetic(player, 'player', 'pants', null);
+    expect(removed.ok).toBe(true);
+    if (removed.ok) expect(removed.state.shop.player.outfit.pants).toBeNull();
+
+    const historyPage = await history(player);
+    expect(historyPage.ok).toBe(true);
+    if (!historyPage.ok) return;
+    expect(historyPage.entries.some((entry) => entry.type === 'shop' && entry.amount === 25)).toBe(true);
+    expect(historyPage.entries.some((entry) => entry.type === 'coins')).toBe(false);
+  });
+
+  it('compartilha o look do caracol e mantém o inventário privado dos jogadores', async () => {
+    const harness = await createHarness();
+    const playerA = await connectClient(harness.address);
+    const playerB = await connectClient(harness.address);
+    const playerC = await connectClient(harness.address);
+    const createdA = await register(playerA, 'Costureiro');
+    const createdB = await register(playerB, 'Observador');
+    const createdC = await register(playerC, 'Testemunha');
+    expect(createdA.ok && createdB.ok && createdC.ok).toBe(true);
+    if (!createdA.ok || !createdB.ok || !createdC.ok) return;
+    expect((await selectCity(playerA, '3550308')).ok).toBe(true);
+    expect((await selectCity(playerB, '3304557')).ok).toBe(true);
+    expect((await selectCity(playerC, '5300108')).ok).toBe(true);
+
+    harness.now.value += 100_000;
+    await harness.manager.tickOnce();
+    const bSnailState = waitForEvent<CaracolStateView>(playerB, 'caracol:state', (next) => next.shop.snail.outfit.shirt === 'shirt-tropical');
+    const cSnailState = waitForEvent<CaracolStateView>(playerC, 'caracol:state', (next) => next.shop.snail.outfit.shirt === 'shirt-tropical');
+    const snailPurchase = await purchaseCosmetic(playerA, 'snail', 'shirt-tropical');
+    expect(snailPurchase.ok).toBe(true);
+    if (!snailPurchase.ok) return;
+    expect((await bSnailState).shop.snail.ownedItemIds).toContain('shirt-tropical');
+    expect((await cSnailState).shop.snail.outfit.shirt).toBe('shirt-tropical');
+
+    harness.now.value += 100_000;
+    await harness.manager.tickOnce();
+    const concurrentPurchases = await Promise.all([
+      purchaseCosmetic(playerA, 'snail', 'cap-flat'),
+      purchaseCosmetic(playerA, 'snail', 'cap-flat'),
+    ]);
+    expect(concurrentPurchases.filter((result) => result.ok)).toHaveLength(1);
+    expect(concurrentPurchases.filter((result) => !result.ok && result.code === 'COSMETIC_ALREADY_OWNED')).toHaveLength(1);
+
+    const bEquip = await equipCosmetic(playerB, 'snail', 'shirt', 'shirt-tropical');
+    expect(bEquip.ok).toBe(true);
+    if (bEquip.ok) expect(bEquip.state.you.coins).toBe(205);
+
+    const aPlayerState = waitForEvent<CaracolStateView>(playerA, 'caracol:state', (next) => next.players.some((player) => player.nickname === 'Observador' && player.outfit.pants === 'pants-jeans'));
+    const bPlayerPurchase = await purchaseCosmetic(playerB, 'player', 'pants-jeans');
+    expect(bPlayerPurchase.ok).toBe(true);
+    if (!bPlayerPurchase.ok) return;
+    expect((await aPlayerState).players.find((player) => player.nickname === 'Observador')?.outfit.pants).toBe('pants-jeans');
+    expect(bPlayerPurchase.state.shop.player.ownedItemIds).toContain('pants-jeans');
+    expect(snailPurchase.state.shop.player.ownedItemIds).not.toContain('pants-jeans');
+  });
+
+  it('preserva a roupa depois da morte e do reset do mundo', async () => {
+    const harness = await createHarness();
+    const player = await connectClient(harness.address);
+    const created = await register(player, 'Elegante');
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    harness.now.value += 100_000;
+    expect((await purchaseCosmetic(player, 'player', 'cap-bucket')).ok).toBe(true);
+    expect((await selectCity(player, '5300108')).ok).toBe(true);
+
+    const death = waitForEvent<{ nickname: string; message: string }>(player, 'caracol:death');
+    const deadState = waitForEvent<CaracolStateView>(player, 'caracol:state', (next) => next.needsCity);
+    harness.now.value += 25_000;
+    await harness.manager.tickOnce();
+    expect((await death).nickname).toBe('Elegante');
+    const state = await deadState;
+    expect(state.you.coins).toBe(0);
+    expect(state.world.snail.speedKmh).toBe(0.05);
+    expect(state.shop.player.ownedItemIds).toContain('cap-bucket');
+    expect(state.shop.player.outfit.cap).toBe('cap-bucket');
+
+    const persisted = await harness.store.loadSnapshot();
+    expect(persisted.accounts[0]?.cosmeticOwnedItemIds).toContain('cap-bucket');
+    expect(persisted.accounts[0]?.cosmeticOutfit.cap).toBe('cap-bucket');
   });
 });

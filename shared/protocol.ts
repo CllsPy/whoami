@@ -10,6 +10,8 @@ import type {
   CaracolRegisterInput,
   CaracolResumeInput,
   CaracolSelectCityInput,
+  CaracolShopEquipInput,
+  CaracolShopPurchaseInput,
   CaracolStateView,
   CaracolVisibilityInput,
 } from './caracol';
@@ -278,6 +280,8 @@ export interface ClientToServerEvents {
   'caracol:redirect': (payload: CaracolRedirectInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:buy-speed': (ack: (result: CaracolActionResult) => void) => void;
   'caracol:buy-discount': (ack: (result: CaracolActionResult) => void) => void;
+  'caracol:shop-purchase': (payload: CaracolShopPurchaseInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:shop-equip': (payload: CaracolShopEquipInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:visibility': (payload: CaracolVisibilityInput) => void;
   'caracol:push-subscribe': (payload: CaracolPushSubscriptionInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:push-unsubscribe': (payload: { endpoint: string }, ack: (result: CaracolActionResult) => void) => void;

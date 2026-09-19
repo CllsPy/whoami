@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type JSX } from 'react';
 import type {
   CaracolActionResult,
+  CaracolCosmeticSlot,
+  CaracolCosmeticWearer,
   CaracolHistoryEntry,
   CaracolLoginInput,
+  CaracolOutfit,
   CaracolRegisterInput,
   CaracolStateView,
 } from '../shared/caracol';
-import { CARACOL_HISTORY_PAGE_SIZE } from '../shared/caracol';
+import { CARACOL_COSMETIC_SLOTS, CARACOL_HISTORY_PAGE_SIZE } from '../shared/caracol';
 import { brazilianCities, type BrazilianCity } from '../shared/cities';
 import { caracolSocket } from './caracolSocket';
 import { serverMayHibernate, wakeServer } from './socket';
@@ -14,6 +17,7 @@ import { serverMayHibernate, wakeServer } from './socket';
 type AuthMode = 'login' | 'register';
 type ConnectionState = 'offline' | 'connecting' | 'waking' | 'online' | 'reconnecting';
 type Feedback = { tone: 'neutral' | 'success' | 'error'; message: string } | null;
+type ShopTab = CaracolCosmeticWearer;
 
 interface CaracolGameProps {
   onExit: () => void;
@@ -52,6 +56,8 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
   const [restoringSession, setRestoringSession] = useState(() => Boolean(readCaracolSessionToken()));
   const [standaloneMode, setStandaloneMode] = useState(() => isStandaloneMode());
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [shopOpen, setShopOpen] = useState(false);
+  const [shopTab, setShopTab] = useState<ShopTab>('player');
   const [historyEntries, setHistoryEntries] = useState<CaracolHistoryEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
@@ -255,13 +261,15 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!historyOpen) return;
+    if (!historyOpen && !shopOpen) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') closeHistory();
+      if (event.key !== 'Escape') return;
+      if (shopOpen) closeShop();
+      else closeHistory();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [historyOpen]);
+  }, [historyOpen, shopOpen]);
 
   useEffect(() => {
     const accountId = state?.you.accountId;
@@ -357,6 +365,7 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
   }
 
   function openHistory(): void {
+    setShopOpen(false);
     setHistoryOpen(true);
     setHistoryEntries([]);
     setHistoryCursor(null);
@@ -367,6 +376,32 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
 
   function closeHistory(): void {
     setHistoryOpen(false);
+  }
+
+  function openShop(tab: ShopTab = 'player'): void {
+    setHistoryOpen(false);
+    setShopTab(tab);
+    setShopOpen(true);
+  }
+
+  function closeShop(): void {
+    setShopOpen(false);
+  }
+
+  function purchaseCosmetic(itemId: string): void {
+    if (!caracolSocket.connected) {
+      setFeedback({ tone: 'error', message: 'A loja está esperando a conexão com o mapa.' });
+      return;
+    }
+    caracolSocket.emit('caracol:shop-purchase', { wearer: shopTab, itemId }, handleActionResult);
+  }
+
+  function equipCosmetic(slot: CaracolCosmeticSlot, itemId: string | null): void {
+    if (!caracolSocket.connected) {
+      setFeedback({ tone: 'error', message: 'A loja está esperando a conexão com o mapa.' });
+      return;
+    }
+    caracolSocket.emit('caracol:shop-equip', { wearer: shopTab, slot, itemId }, handleActionResult);
   }
 
   function handleActionResult(result: CaracolActionResult): void {
@@ -389,6 +424,7 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
     setPendingAuth(null);
     setPassword('');
     setHistoryOpen(false);
+    setShopOpen(false);
     setHistoryEntries([]);
     onExit();
   }
@@ -493,7 +529,7 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
       <header className="topbar home-topbar caracol-topbar">
         <div className="logo" aria-label="Jogos"><span className="logo-mark caracol-logo-mark">🐌</span><span className="logo-word">JOGOS<br /><b>CARACOL</b></span></div>
         <div className="caracol-top-meta"><span className="caracol-live-dot" aria-hidden="true" /> mapa global · {state.players.length} sobrevivente{state.players.length === 1 ? '' : 's'} · <span className="caracol-sync-meta">{lastSyncedAt === null ? 'sincronizando' : 'sincronizado'}</span></div>
-        <div className="topbar-actions"><span className={`connection-pill connection-${connection}`}><span className="connection-dot" aria-hidden="true" />{connectionLabel(connection)}</span><button className="caracol-history-trigger" type="button" onClick={openHistory} aria-expanded={historyOpen} aria-controls="caracol-history-drawer"><span aria-hidden="true">↺</span> Histórico</button><button className="text-button" type="button" onClick={leave}>Sair</button></div>
+        <div className="topbar-actions"><span className={`connection-pill connection-${connection}`}><span className="connection-dot" aria-hidden="true" />{connectionLabel(connection)}</span><button className="caracol-shop-trigger" type="button" onClick={() => openShop()} aria-expanded={shopOpen} aria-controls="caracol-shop-drawer"><span aria-hidden="true">✦</span> Loja</button><button className="caracol-history-trigger" type="button" onClick={openHistory} aria-expanded={historyOpen} aria-controls="caracol-history-drawer"><span aria-hidden="true">↺</span> Histórico</button><button className="text-button" type="button" onClick={leave}>Sair</button></div>
       </header>
       {connection !== 'online' && <div className="caracol-sync-banner" role="status"><span className="connection-dot" aria-hidden="true" /> A tela está reconectando; suas ações voltam quando o mapa sincronizar.</div>}
       {state.needsCity ? (
@@ -516,23 +552,23 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
             </div>
             {notice && <InlineNotice tone="neutral">{notice}</InlineNotice>}
             <BrazilMap state={state} geoJson={geoJson} />
-            <div className="caracol-map-legend"><span><i className="legend-dot legend-you" /> você</span><span><i className="legend-dot legend-target" /> alvo atual</span><span><i className="legend-dot legend-other" /> sobreviventes</span><span className="legend-snail">🐌 caracol</span></div>
+            <div className="caracol-map-legend"><span><i className="legend-dot legend-you" /> você</span><span><i className="legend-dot legend-target" /> alvo atual</span><span><i className="legend-dot legend-other" /> sobreviventes</span><span className="legend-snail"><CosmeticAvatar wearer="snail" outfit={state.world.snail.outfit} size="tiny" label="caracol vestido" /> caracol</span></div>
           </div>
           <aside className="caracol-control-column">
-            <div className="caracol-wallet paper-card"><span className="micro-label">Seu bolso</span><strong>{state.you.coins}</strong><span>moedas</span><div className="caracol-player-line"><b>{state.you.nickname}</b><span>{state.you.city?.name} · {state.you.city?.uf}</span></div></div>
+            <div className="caracol-wallet paper-card"><CosmeticAvatar wearer="player" outfit={state.shop.player.outfit} size="small" label={`${state.you.nickname} vestido`} /><div className="caracol-wallet-copy"><span className="micro-label">Seu bolso</span><strong>{state.you.coins}</strong><span>moedas</span><div className="caracol-player-line"><b>{state.you.nickname}</b><span>{state.you.city?.name} · {state.you.city?.uf}</span></div></div></div>
             <div className="caracol-control-card paper-card">
-              <div className="panel-heading"><div><span className="micro-label">O bicho</span><h2>{state.world.snail.targetNickname ? `Atrás de ${state.world.snail.targetNickname}` : 'Dormindo em Brasília'}</h2></div><span className="panel-mark">🐌</span></div>
+              <div className="panel-heading"><div><span className="micro-label">O bicho</span><h2>{state.world.snail.targetNickname ? `Atrás de ${state.world.snail.targetNickname}` : 'Dormindo em Brasília'}</h2></div><CosmeticAvatar wearer="snail" outfit={state.world.snail.outfit} size="medium" label="Caracol vestido" /></div>
               <div className="caracol-metrics"><div><span>distância</span><strong>{state.world.snail.distanceKm === null ? '—' : formatDistance(state.world.snail.distanceKm)}</strong></div><div><span>chega em</span><strong>{formatEta(state.world.snail.etaMs)}</strong></div></div>
               <form className="caracol-action-form" onSubmit={redirect}><label className="field-label" htmlFor="caracol-target">Mudar o alvo<input id="caracol-target" className="text-input" value={redirectNickname} onChange={(event) => setRedirectNickname(event.target.value)} placeholder="nick de alguém vivo" autoComplete="off" /></label><button className="ghost-button caracol-action-button" type="submit" disabled={connection !== 'online'}>Enviar para essa pessoa <span>{state.world.snail.redirectCost} moedas</span></button></form>
               <div className="caracol-buy-row"><button className="primary-button caracol-buy-button" type="button" onClick={buySpeed} disabled={connection !== 'online'}>Acelerar para {(state.world.snail.speedLevel + 1) * 100} km/h <span>{state.world.snail.speedCost} moedas</span></button><button className="ghost-button caracol-discount-button" type="button" onClick={buyDiscount} disabled={connection !== 'online'}>Desconto {state.you.speedDiscountLevel}/2</button><p className="caracol-discount-note">Seu desconto vale para redirecionar o alvo e acelerar o caracol.</p></div>
               {feedback && <InlineNotice tone={feedback.tone}>{feedback.message}</InlineNotice>}
             </div>
             <div className="caracol-alert-card paper-card"><div><span className="micro-label">Fique sabendo</span><strong>{iosDevice && !standaloneMode ? 'Instale para receber alertas.' : 'O caracol não pede licença.'}</strong><p>{iosDevice && !standaloneMode ? 'No iPhone: Compartilhar → Adicionar à Tela de Início. Abra o ícone e ligue os alertas por lá.' : 'Ative o alerta para ser avisado mesmo com o jogo fechado.'}</p></div><button className="text-button" type="button" onClick={() => void enablePush()} disabled={pushStatus === 'working' || pushStatus === 'enabled' || (iosDevice && !standaloneMode)}>{pushStatus === 'enabled' ? 'Alertas ligados' : pushStatus === 'working' ? 'Ligando…' : iosDevice && !standaloneMode ? 'Instale primeiro' : 'Ativar alertas'}</button></div>
-            <div className="caracol-players paper-card"><div className="panel-heading"><div><span className="micro-label">No mapa</span><h2>{state.players.length} sobrevivente{state.players.length === 1 ? '' : 's'}</h2></div><span className="panel-mark">AO VIVO</span></div><div className="caracol-player-list">{state.players.map((player) => <div className={`caracol-player-row ${player.isYou ? 'is-you' : ''} ${player.accountId === state.world.snail.targetAccountId ? 'is-target' : ''}`} key={player.accountId}><span className="player-avatar">{player.nickname.slice(0, 1).toUpperCase()}</span><div><strong>{player.nickname}{player.isYou ? <small> você</small> : null}</strong><span>{player.city.name} · {player.city.uf}</span></div><i className={player.online ? 'online-mark' : 'offline-mark'} title={player.online ? 'online' : 'offline'} />{player.accountId === state.world.snail.targetAccountId && <b className="target-badge">alvo</b>}</div>)}</div></div>
+            <div className="caracol-players paper-card"><div className="panel-heading"><div><span className="micro-label">No mapa</span><h2>{state.players.length} sobrevivente{state.players.length === 1 ? '' : 's'}</h2></div><span className="panel-mark">AO VIVO</span></div><div className="caracol-player-list">{state.players.map((player) => <div className={`caracol-player-row ${player.isYou ? 'is-you' : ''} ${player.accountId === state.world.snail.targetAccountId ? 'is-target' : ''}`} key={player.accountId}><CosmeticAvatar wearer="player" outfit={player.outfit} size="tiny" label={`${player.nickname} vestido`} /><div><strong>{player.nickname}{player.isYou ? <small> você</small> : null}</strong><span>{player.city.name} · {player.city.uf}</span></div><i className={player.online ? 'online-mark' : 'offline-mark'} title={player.online ? 'online' : 'offline'} />{player.accountId === state.world.snail.targetAccountId && <b className="target-badge">alvo</b>}</div>)}</div></div>
           </aside>
         </section>
       )}
-      {historyOpen && <button className="caracol-history-backdrop" type="button" aria-label="Fechar histórico" onClick={closeHistory} />}
+      {(historyOpen || shopOpen) && <button className="caracol-history-backdrop" type="button" aria-label="Fechar painel" onClick={() => { closeHistory(); closeShop(); }} />}
       <aside id="caracol-history-drawer" className={`caracol-history-drawer ${historyOpen ? 'is-open' : ''}`} aria-label="Histórico do jogo" aria-hidden={!historyOpen}>
         <div className="caracol-history-head"><div><span className="micro-label">Mapa global</span><h2>O que aconteceu</h2><p>As ações mais recentes de todos os jogadores.</p></div><button className="caracol-history-close" type="button" onClick={closeHistory} aria-label="Fechar histórico">×</button></div>
         <div className="caracol-history-body" aria-live="polite">
@@ -543,6 +579,7 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
         </div>
         <div className="caracol-history-foot">{historyHasMore ? <button className="ghost-button caracol-history-more" type="button" onClick={() => loadHistory(historyCursor)} disabled={historyLoading}>{historyLoading ? 'Carregando…' : `Carregar mais ${CARACOL_HISTORY_PAGE_SIZE}`}</button> : historyEntries.length > 0 ? <span>Fim do histórico</span> : null}</div>
       </aside>
+      <ShopDrawer state={state} open={shopOpen} tab={shopTab} onTabChange={setShopTab} onClose={closeShop} onPurchase={purchaseCosmetic} onEquip={equipCosmetic} />
     </main>
   );
 }
@@ -557,7 +594,86 @@ function BrazilMap({ state, geoJson }: { state: CaracolStateView; geoJson: GeoFe
   const target = state.world.snail.targetAccountId ? state.players.find((player) => player.accountId === state.world.snail.targetAccountId) : null;
   const snailPoint = project(state.world.snail.lat, state.world.snail.lon, width, height);
   const targetPoint = target ? project(target.city.lat, target.city.lon, width, height) : null;
-  return <div className="caracol-map-frame" role="img" aria-label="Mapa do Brasil com o caracol e os sobreviventes"><svg className="caracol-map" viewBox={`0 0 ${width} ${height}`} aria-hidden="true"><rect width={width} height={height} className="map-paper" />{geoJson?.features.map((feature) => <path key={feature.properties?.sigla ?? feature.properties?.name} d={featurePath(feature, width, height)} className="state-shape"><title>{feature.properties?.name ?? feature.properties?.sigla}</title></path>)}{targetPoint && <line x1={snailPoint.x} y1={snailPoint.y} x2={targetPoint.x} y2={targetPoint.y} className="snail-route" />}{state.players.map((player) => { const point = project(player.city.lat, player.city.lon, width, height); return <g key={player.accountId} className={`map-player ${player.isYou ? 'map-player-you' : ''} ${player.accountId === state.world.snail.targetAccountId ? 'map-player-target' : ''}`}><circle cx={point.x} cy={point.y} r={player.isYou || player.accountId === state.world.snail.targetAccountId ? 7 : 4} /><title>{player.nickname} · {player.city.name}</title>{(player.isYou || player.accountId === state.world.snail.targetAccountId) && <text x={point.x + 10} y={point.y - 8}>{player.nickname}</text>}</g>; })}<g className="snail-token" transform={`translate(${snailPoint.x - 15} ${snailPoint.y - 17})`}><circle cx="15" cy="17" r="15" /><text x="15" y="23" textAnchor="middle">🐌</text><title>Caracol</title></g></svg>{!geoJson && <div className="map-loading">Desenhando o Brasil…</div>}</div>;
+  return <div className="caracol-map-frame" role="img" aria-label="Mapa do Brasil com o caracol vestido e os sobreviventes"><svg className="caracol-map" viewBox={`0 0 ${width} ${height}`} aria-hidden="true"><rect width={width} height={height} className="map-paper" />{geoJson?.features.map((feature) => <path key={feature.properties?.sigla ?? feature.properties?.name} d={featurePath(feature, width, height)} className="state-shape"><title>{feature.properties?.name ?? feature.properties?.sigla}</title></path>)}{targetPoint && <line x1={snailPoint.x} y1={snailPoint.y} x2={targetPoint.x} y2={targetPoint.y} className="snail-route" />}{state.players.map((player) => { const point = project(player.city.lat, player.city.lon, width, height); return <g key={player.accountId} className={`map-player ${player.isYou ? 'map-player-you' : ''} ${player.accountId === state.world.snail.targetAccountId ? 'map-player-target' : ''}`} transform={`translate(${point.x} ${point.y})`}><circle cx="0" cy="0" r={player.isYou || player.accountId === state.world.snail.targetAccountId ? 9 : 6} className="map-player-halo" />{mapPlayerAvatar(player.outfit)}<title>{player.nickname} · {player.city.name}</title>{(player.isYou || player.accountId === state.world.snail.targetAccountId) && <text x="11" y="-11">{player.nickname}</text>}</g>; })}<g className="snail-token" transform={`translate(${snailPoint.x - 18} ${snailPoint.y - 20})`}>{mapSnailAvatar(state.world.snail.outfit)}<title>Caracol vestido</title></g></svg>{!geoJson && <div className="map-loading">Desenhando o Brasil…</div>}</div>;
+}
+
+function mapPlayerAvatar(outfit: CaracolOutfit): JSX.Element {
+  return <g className="map-avatar-player"><circle cx="0" cy="-8" r="4" className="map-avatar-skin" /><path d="M-5 -3 Q0 -7 5 -3 L5 5 L-5 5 Z" className={`map-avatar-shirt ${outfit.shirt ?? 'default'}`} /><path d="M-5 5 L0 5 L-1 12 L-5 12 Z M0 5 L5 5 L5 12 L1 12 Z" className={`map-avatar-pants ${outfit.pants ?? 'default'}`} />{outfit.watch && <circle cx="5" cy="2" r="1.6" className={`map-avatar-watch ${outfit.watch}`} />}{outfit.glasses && <path d="M-4 -9 H4" className={`map-avatar-glasses ${outfit.glasses}`} />}{outfit.cap && <path d="M-5 -12 Q0 -17 5 -12 L5 -10 H-5 Z" className={`map-avatar-cap ${outfit.cap}`} />}</g>;
+}
+
+function mapSnailAvatar(outfit: CaracolStateView['world']['snail']['outfit']): JSX.Element {
+  return <g className="map-avatar-snail"><ellipse cx="18" cy="21" rx="16" ry="4" className="map-snail-shadow" /><path d="M3 19 C2 8 8 3 17 5 C25 6 31 12 31 20 Z" className="map-snail-shell" /><path d="M5 19 C5 14 7 11 11 10 C16 9 19 13 19 19 Z" className="map-snail-body" /><path d="M9 7 L9 1 M16 6 L17 0" className="map-snail-antenna" /><circle cx="9" cy="1" r="1.5" className="map-snail-eye" /><circle cx="17" cy="0" r="1.5" className="map-snail-eye" />{outfit.pants && <path d="M6 16 Q12 13 19 16 L19 21 H6 Z" className={`map-snail-pants ${outfit.pants}`} />}{outfit.shirt && <path d="M7 12 Q12 9 18 12 L19 18 H6 Z" className={`map-snail-shirt ${outfit.shirt}`} />}{outfit.watch && <circle cx="19" cy="15" r="1.7" className={`map-snail-watch ${outfit.watch}`} />}{outfit.glasses && <path d="M6 8 H19" className={`map-snail-glasses ${outfit.glasses}`} />}{outfit.cap && <path d="M5 7 Q12 1 20 6 L21 8 H5 Z" className={`map-snail-cap ${outfit.cap}`} />}</g>;
+}
+
+function CosmeticAvatar({ wearer, outfit, size, label }: { wearer: CaracolCosmeticWearer; outfit: CaracolOutfit; size: 'tiny' | 'small' | 'medium' | 'large'; label: string }): JSX.Element {
+  return <span className={`cosmetic-avatar cosmetic-avatar-${wearer} cosmetic-avatar-${size}`} role="img" aria-label={label}>
+    <span className="cosmetic-avatar-shadow" />
+    {wearer === 'snail' ? <>
+      <span className="cosmetic-snail-shell" />
+      <span className="cosmetic-snail-body" />
+      <span className="cosmetic-snail-eye cosmetic-snail-eye-left" />
+      <span className="cosmetic-snail-eye cosmetic-snail-eye-right" />
+      <span className="cosmetic-snail-antenna cosmetic-snail-antenna-left" />
+      <span className="cosmetic-snail-antenna cosmetic-snail-antenna-right" />
+    </> : <>
+      <span className="cosmetic-human-head" />
+      <span className={`cosmetic-layer cosmetic-shirt ${outfit.shirt ?? 'default'}`} />
+      <span className={`cosmetic-layer cosmetic-pants ${outfit.pants ?? 'default'}`} />
+    </>}
+    {wearer === 'snail' && <>
+      <span className={`cosmetic-layer cosmetic-shirt ${outfit.shirt ?? 'default'}`} />
+      <span className={`cosmetic-layer cosmetic-pants ${outfit.pants ?? 'default'}`} />
+    </>}
+    {outfit.watch && <span className={`cosmetic-layer cosmetic-watch ${outfit.watch}`} />}
+    {outfit.glasses && <span className={`cosmetic-layer cosmetic-glasses ${outfit.glasses}`} />}
+    {outfit.cap && <span className={`cosmetic-layer cosmetic-cap ${outfit.cap}`} />}
+  </span>;
+}
+
+function ShopDrawer({ state, open, tab, onTabChange, onClose, onPurchase, onEquip }: { state: CaracolStateView; open: boolean; tab: ShopTab; onTabChange: (tab: ShopTab) => void; onClose: () => void; onPurchase: (itemId: string) => void; onEquip: (slot: CaracolCosmeticSlot, itemId: string | null) => void }): JSX.Element {
+  const wardrobe = tab === 'player' ? state.shop.player : state.shop.snail;
+  const title = tab === 'player' ? 'Seu guarda-roupa' : 'O guarda-roupa do caracol';
+  const description = tab === 'player'
+    ? 'Peças compradas ficam para sempre na sua conta.'
+    : 'Este visual é global. Todo mundo vê a mesma roupa no mapa.';
+  return <aside id="caracol-shop-drawer" className={`caracol-shop-drawer ${open ? 'is-open' : ''}`} aria-label="Loja de cosméticos" aria-hidden={!open}>
+    <div className="caracol-shop-head">
+      <div><span className="micro-label">Loja de cosméticos</span><h2>{title}</h2><p>{description}</p></div>
+      <button className="caracol-history-close" type="button" onClick={onClose} aria-label="Fechar loja">×</button>
+    </div>
+    <div className="caracol-shop-tabs" role="tablist" aria-label="Guarda-roupa">
+      <button type="button" role="tab" aria-selected={tab === 'player'} className={tab === 'player' ? 'active' : ''} onClick={() => onTabChange('player')}><CosmeticAvatar wearer="player" outfit={state.shop.player.outfit} size="tiny" label="Seu personagem" /><span>Você</span></button>
+      <button type="button" role="tab" aria-selected={tab === 'snail'} className={tab === 'snail' ? 'active' : ''} onClick={() => onTabChange('snail')}><CosmeticAvatar wearer="snail" outfit={state.shop.snail.outfit} size="tiny" label="Caracol" /><span>Caracol</span></button>
+    </div>
+    <div className="caracol-shop-preview paper-card">
+      <CosmeticAvatar wearer={tab} outfit={wardrobe.outfit} size="large" label={tab === 'player' ? 'Seu personagem vestido' : 'Caracol vestido'} />
+      <div><span className="micro-label">Visual atual</span><strong>{tab === 'player' ? state.you.nickname : 'Caracol global'}</strong><p>{wardrobe.ownedItemIds.length} de {state.shop.catalog.length} peças desbloqueadas</p></div>
+    </div>
+    <div className="caracol-shop-body">
+      {CARACOL_COSMETIC_SLOTS.map((slot) => {
+        const items = state.shop.catalog.filter((item) => item.slot === slot);
+        const equipped = wardrobe.outfit[slot];
+        return <section className="caracol-shop-section" key={slot} aria-labelledby={`shop-slot-${slot}`}>
+          <div className="caracol-shop-section-head"><div><span className="micro-label">Categoria</span><h3 id={`shop-slot-${slot}`}>{cosmeticSlotLabel(slot)}</h3></div>{equipped && <button className="shop-clear-button" type="button" onClick={() => onEquip(slot, null)}>Tirar</button>}</div>
+          <div className="caracol-shop-grid">{items.map((item) => {
+            const owned = wardrobe.ownedItemIds.includes(item.id);
+            const isEquipped = equipped === item.id;
+            const previewOutfit: CaracolOutfit = { ...wardrobe.outfit, [slot]: item.id };
+            return <article className={`caracol-shop-item ${isEquipped ? 'is-equipped' : ''}`} key={item.id}>
+              <div className="caracol-shop-item-preview"><CosmeticAvatar wearer={tab} outfit={previewOutfit} size="small" label={`${item.name} para ${tab === 'player' ? 'você' : 'o caracol'}`} /></div>
+              <div className="caracol-shop-item-copy"><strong>{item.name}</strong><span>{owned ? isEquipped ? 'Equipado' : 'Desbloqueado' : `${item.price} moedas`}</span></div>
+              {isEquipped ? <button className="shop-item-button is-equipped" type="button" disabled>Equipado</button> : owned ? <button className="shop-item-button" type="button" onClick={() => onEquip(slot, item.id)}>Usar</button> : <button className="shop-item-button shop-item-buy" type="button" onClick={() => onPurchase(item.id)} disabled={state.you.coins < item.price}>Comprar <span>{item.price}</span></button>}
+            </article>;
+          })}</div>
+        </section>;
+      })}
+    </div>
+  </aside>;
+}
+
+function cosmeticSlotLabel(slot: CaracolCosmeticSlot): string {
+  const labels: Record<CaracolCosmeticSlot, string> = { pants: 'Calças', shirt: 'Camisas', watch: 'Relógios', glasses: 'Óculos', cap: 'Bonés' };
+  return labels[slot];
 }
 
 function project(lat: number, lon: number, width: number, height: number): { x: number; y: number } {
@@ -602,6 +718,7 @@ function historyIcon(type: CaracolHistoryEntry['type']): string {
     target: '◎',
     approaching: '…',
     death: '✕',
+    shop: '✦',
   };
   return icons[type];
 }
