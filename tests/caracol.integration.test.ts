@@ -184,7 +184,12 @@ describe('mundo global do Caracol', () => {
     expect(redirected.ok).toBe(true);
     if (redirected.ok) expect(redirected.state.world.snail.targetNickname).toBe('Alvo');
 
+    const offlineState = waitForEvent<CaracolStateView>(playerA, 'caracol:state', (next) => next.players.some((player) => player.nickname === 'Alvo' && !player.online));
     playerB.disconnect();
+    const offlineSnapshot = await offlineState;
+    const offlinePlayer = offlineSnapshot.players.find((player) => player.nickname === 'Alvo');
+    expect(offlinePlayer?.alive).toBe(true);
+    expect(offlinePlayer?.online).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 50));
     harness.now.value += 20_000;
     const reconnecting = await connectClient(harness.address);
@@ -219,25 +224,46 @@ describe('mundo global do Caracol', () => {
     if (refreshed.ok) expect(refreshed.state.you.coins).toBe(17);
   });
 
-  it('mata no alcance, zera moedas, mantém desconto e reinicia o caracol', async () => {
+  it('mata no alcance, mantém o caracol no local, zera o desconto e o preço de redirecionar', async () => {
     const harness = await createHarness();
     const playerA = await connectClient(harness.address);
-    expect((await register(playerA, 'Brasiliense')).ok).toBe(true);
-    expect((await selectCity(playerA, '5300108')).ok).toBe(true);
+    const playerB = await connectClient(harness.address);
+    expect((await register(playerA, 'DiretorDaMorte')).ok).toBe(true);
+    expect((await register(playerB, 'MortaNoRio')).ok).toBe(true);
+    expect((await selectCity(playerA, '3550308')).ok).toBe(true);
+    const selectedCity = await selectCity(playerB, '3304557');
+    expect(selectedCity.ok).toBe(true);
+    if (!selectedCity.ok || !selectedCity.state.you.city) return;
+    const targetCity = selectedCity.state.you.city;
 
-    harness.now.value += 25_000;
-    expect((await buyDiscount(playerA)).ok).toBe(true);
-    const death = waitForEvent<{ nickname: string; message: string }>(playerA, 'caracol:death');
-    const deadState = waitForEvent<CaracolStateView>(playerA, 'caracol:state', (next) => next.needsCity);
+    harness.now.value += 3_600_000;
     await harness.manager.tickOnce();
-    expect((await death).nickname).toBe('Brasiliense');
+    expect((await buySpeed(playerA)).ok).toBe(true);
+
+    expect((await buyDiscount(playerB)).ok).toBe(true);
+    harness.now.value += 10_000;
+    const redirected = await redirect(playerA, 'MortaNoRio');
+    expect(redirected.ok).toBe(true);
+    if (!redirected.ok) return;
+    expect(redirected.state.world.snail.redirectCost).toBe(16);
+
+    const death = waitForEvent<{ nickname: string; message: string }>(playerB, 'caracol:death');
+    const deadState = waitForEvent<CaracolStateView>(playerB, 'caracol:state', (next) => next.needsCity);
+    const mapState = waitForEvent<CaracolStateView>(playerA, 'caracol:state', (next) => next.players.some((player) => player.nickname === 'MortaNoRio' && !player.alive));
+    harness.now.value += 100_000_000;
+    await harness.manager.tickOnce();
+    expect((await death).nickname).toBe('MortaNoRio');
     const state = await deadState;
     expect(state.needsCity).toBe(true);
     expect(state.you.coins).toBe(0);
-    expect(state.you.speedDiscountLevel).toBe(1);
+    expect(state.you.speedDiscountLevel).toBe(0);
     expect(state.world.snail.speedKmh).toBe(0.05);
-    expect(state.world.snail.lat).toBeCloseTo(-15.7795, 5);
-    expect(state.world.snail.lon).toBeCloseTo(-47.9297, 5);
+    expect(state.world.snail.redirectCost).toBe(8);
+    expect(state.world.snail.lat).toBeCloseTo(targetCity.lat, 5);
+    expect(state.world.snail.lon).toBeCloseTo(targetCity.lon, 5);
+    const deadPlayer = (await mapState).players.find((player) => player.nickname === 'MortaNoRio');
+    expect(deadPlayer?.alive).toBe(false);
+    expect(deadPlayer?.city).toEqual(targetCity);
   });
 
   it('dobra o custo global de redirecionar e pagina as ações de 20 em 20', async () => {

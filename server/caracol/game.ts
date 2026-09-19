@@ -21,7 +21,6 @@ import {
   type CaracolStateView,
   type CaracolVisibilityInput,
   CARACOL_BASE_SPEED_KMH,
-  CARACOL_BRAZILIA,
   CARACOL_COIN_INTERVAL_MS,
   CARACOL_DISCOUNT_COSTS,
   CARACOL_HISTORY_PAGE_SIZE,
@@ -689,6 +688,8 @@ export class CaracolGameManager {
       const remainingKm = distanceKm(from, to);
       const travelKm = this.speedKmh() * elapsedMs / 3_600_000;
       if (remainingKm <= travelKm || remainingKm <= 0.001) {
+        this.world.snailLat = to.lat;
+        this.world.snailLon = to.lon;
         await this.eliminate(target, now);
         await this.ensureTarget();
       } else {
@@ -710,15 +711,10 @@ export class CaracolGameManager {
     };
     target.alive = false;
     target.coins = 0;
-    target.cityId = null;
-    target.cityName = null;
-    target.cityUf = null;
-    target.cityLat = null;
-    target.cityLon = null;
     target.lastCoinAccruedAt = now;
-    this.world.snailLat = CARACOL_BRAZILIA.lat;
-    this.world.snailLon = CARACOL_BRAZILIA.lon;
+    target.speedDiscountLevel = 0;
     this.world.speedLevel = 0;
+    this.world.redirectLevel = 0;
     this.world.targetAccountId = null;
     this.approachingSent.clear();
     await Promise.all([this.store.saveAccount(target), this.store.saveWorld(this.world)]);
@@ -811,11 +807,12 @@ export class CaracolGameManager {
         serverNow: this.clock(),
       },
       players: Array.from(this.accounts.values())
-        .filter((candidate) => candidate.alive && this.cityFor(candidate) !== null)
+        .filter((candidate) => this.cityFor(candidate) !== null)
         .sort((a, b) => a.nickname.localeCompare(b.nickname, 'pt-BR'))
         .map((candidate) => ({
           accountId: candidate.id,
           nickname: candidate.nickname,
+          alive: candidate.alive,
           city: this.cityFor(candidate)!,
           online: candidate.sockets.size > 0,
           isYou: candidate.id === account.id,
