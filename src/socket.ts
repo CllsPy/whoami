@@ -35,7 +35,7 @@ export function clearSession(): void {
   sessionStorage.removeItem(SESSION_KEY);
 }
 
-const SERVER_URL: string | undefined = import.meta.env.VITE_SERVER_URL || undefined;
+export const SERVER_URL: string | undefined = import.meta.env.VITE_SERVER_URL || undefined;
 
 /** O servidor está em outro domínio, então pode estar hibernando. */
 export const serverMayHibernate = Boolean(SERVER_URL);

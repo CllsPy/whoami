@@ -1,3 +1,19 @@
+import type {
+  CaracolActionResult,
+  CaracolDeathPayload,
+  CaracolHistoryInput,
+  CaracolHistoryResult,
+  CaracolLoginInput,
+  CaracolNoticePayload,
+  CaracolPushSubscriptionInput,
+  CaracolRedirectInput,
+  CaracolRegisterInput,
+  CaracolResumeInput,
+  CaracolSelectCityInput,
+  CaracolStateView,
+  CaracolVisibilityInput,
+} from './caracol';
+
 export type GameMode = 'whoami' | 'draw-impostor';
 export type RoomPhase = 'lobby' | 'playing' | 'finished';
 export type DrawPhase = 'drawing' | 'finished';
@@ -254,6 +270,19 @@ export interface ClientToServerEvents {
   'hint:request': (payload: HintRequestInput) => void;
   'hint:answer': (payload: HintAnswerInput) => void;
   'hint:cancel': () => void;
+  'caracol:register': (payload: CaracolRegisterInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:login': (payload: CaracolLoginInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:resume': (payload: CaracolResumeInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:sync': (ack: (result: CaracolActionResult) => void) => void;
+  'caracol:select-city': (payload: CaracolSelectCityInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:redirect': (payload: CaracolRedirectInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:buy-speed': (ack: (result: CaracolActionResult) => void) => void;
+  'caracol:buy-discount': (ack: (result: CaracolActionResult) => void) => void;
+  'caracol:visibility': (payload: CaracolVisibilityInput) => void;
+  'caracol:push-subscribe': (payload: CaracolPushSubscriptionInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:push-unsubscribe': (payload: { endpoint: string }, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:history': (payload: CaracolHistoryInput, ack: (result: CaracolHistoryResult) => void) => void;
+  'caracol:logout': () => void;
 }
 
 export interface ServerToClientEvents {
@@ -267,6 +296,10 @@ export interface ServerToClientEvents {
   'draw:accusation:result': (payload: DrawAccusationResultPayload) => void;
   'draw:word:result': (payload: DrawWordResultPayload) => void;
   error: (payload: GameErrorPayload) => void;
+  'caracol:state': (state: CaracolStateView) => void;
+  'caracol:notice': (payload: CaracolNoticePayload) => void;
+  'caracol:death': (payload: CaracolDeathPayload) => void;
+  'caracol:history-added': (entry: import('./caracol').CaracolHistoryEntry) => void;
 }
 
 export interface InterServerEvents {
@@ -276,4 +309,6 @@ export interface InterServerEvents {
 export interface SocketData {
   roomCode?: string;
   playerId?: string;
+  caracolAccountId?: string;
+  caracolSessionTokenHash?: string;
 }

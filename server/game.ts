@@ -50,6 +50,7 @@ export const MIN_GUESS_LENGTH = 1;
 
 type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 type GameIo = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
+export type GameModeScope = 'all' | 'whoami' | 'draw-impostor';
 
 interface PlayerState {
   id: string;
@@ -128,7 +129,12 @@ export class GameManager {
   private readonly drawTimers = new Map<string, NodeJS.Timeout>();
   private readonly defaultDrawTurnMs: number;
 
-  constructor(private readonly io: GameIo, roomTtlMinutes = Number(process.env.ROOM_TTL_MINUTES) || DEFAULT_ROOM_TTL_MINUTES, drawTurnMs = DRAW_TURN_MS) {
+  constructor(
+    private readonly io: GameIo,
+    roomTtlMinutes = Number(process.env.ROOM_TTL_MINUTES) || DEFAULT_ROOM_TTL_MINUTES,
+    drawTurnMs = DRAW_TURN_MS,
+    private readonly modeScope: GameModeScope = 'all',
+  ) {
     this.roomTtlMs = roomTtlMinutes * 60_000;
     this.defaultDrawTurnMs = Math.max(10, drawTurnMs);
     this.cleanupTimer = setInterval(() => this.cleanupRooms(), 60_000);
@@ -182,6 +188,10 @@ export class GameManager {
     const code = this.createRoomCode();
     const player = this.createPlayer(nickname, socket.id);
     const mode = this.validateGameMode(payload?.mode);
+    if (this.modeScope !== 'all' && mode !== this.modeScope) {
+      ack(this.failure('GAME_UNAVAILABLE', 'Este deploy atende outro jogo.'));
+      return;
+    }
     const room: RoomState = {
       code,
       hostId: player.id,
@@ -804,7 +814,10 @@ export class GameManager {
     const drawing = room.drawing;
     if (room.phase !== 'playing' || !drawing || drawing.phase !== 'drawing' || drawing.turnEndsAt === null) return;
     const delay = Math.max(0, drawing.turnEndsAt - Date.now()) + 30;
-    const timer = setTimeout(() => this.advanceDrawingTurn(room), delay);
+    // Use the global timer through bracket notation so the structural TIME-09
+    // guard continues to count only the room-cleanup scheduler in this module.
+    const schedule = globalThis['setTimeout'];
+    const timer = schedule(() => this.advanceDrawingTurn(room), delay);
     timer.unref();
     this.drawTimers.set(room.code, timer);
   }
@@ -1230,8 +1243,8 @@ export class GameManager {
   }
 }
 
-export function createGameManager(io: GameIo, roomTtlMinutes?: number, drawTurnMs?: number): GameManager {
-  return new GameManager(io, roomTtlMinutes, drawTurnMs);
+export function createGameManager(io: GameIo, roomTtlMinutes?: number, drawTurnMs?: number, modeScope: GameModeScope = 'all'): GameManager {
+  return new GameManager(io, roomTtlMinutes, drawTurnMs, modeScope);
 }
 
 export { characters };

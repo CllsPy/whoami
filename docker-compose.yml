@@ -3,11 +3,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_GAME_SERVICE: ${VITE_GAME_SERVICE:-all}
     environment:
       NODE_ENV: production
+      GAME_SERVICE: ${GAME_SERVICE:-all}
       HOST: 0.0.0.0
       PORT: 3001
       ROOM_TTL_MINUTES: 30
+      CARACOL_DATABASE_URL: postgresql://caracol:${CARACOL_POSTGRES_PASSWORD:-caracol-local-password}@postgres:5432/caracol
+      CARACOL_VAPID_PUBLIC_KEY: ${CARACOL_VAPID_PUBLIC_KEY:-}
+      CARACOL_VAPID_PRIVATE_KEY: ${CARACOL_VAPID_PRIVATE_KEY:-}
+      CARACOL_VAPID_SUBJECT: ${CARACOL_VAPID_SUBJECT:-mailto:caracol@gamegamegame.site}
+    depends_on:
+      postgres:
+        condition: service_healthy
     expose:
       - "3001"
     restart: unless-stopped
@@ -21,6 +31,23 @@ services:
       timeout: 4s
       retries: 12
       start_period: 8s
+    networks:
+      - whoiam
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: caracol
+      POSTGRES_USER: caracol
+      POSTGRES_PASSWORD: ${CARACOL_POSTGRES_PASSWORD:-caracol-local-password}
+    volumes:
+      - caracol-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caracol -d caracol"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
     networks:
       - whoiam
 
@@ -56,3 +83,6 @@ services:
 networks:
   whoiam:
     driver: bridge
+
+volumes:
+  caracol-postgres:

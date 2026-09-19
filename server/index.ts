@@ -5,10 +5,21 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import type { ClientToServerEvents, InterServerEvents, ServerToClientEvents, SocketData } from '../shared/protocol';
 import { createGameManager } from './game';
+import { createCaracolManager } from './caracol/game';
 import { isOriginAllowed, parseAllowedOrigins } from './origins';
+
+type RuntimeService = 'all' | 'lobby' | 'whoami' | 'impostor' | 'caracol';
+
+function readRuntimeService(): RuntimeService {
+  const value = process.env.GAME_SERVICE;
+  return value === 'lobby' || value === 'whoami' || value === 'impostor' || value === 'caracol' || value === 'all'
+    ? value
+    : 'all';
+}
 
 const app = express();
 const httpServer = createServer(app);
+const runtimeService = readRuntimeService();
 const allowedOrigins = parseAllowedOrigins(process.env.PUBLIC_ORIGIN);
 const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(httpServer, {
   cors: {
@@ -16,7 +27,13 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEve
     credentials: true,
   },
 });
-const gameManager = createGameManager(io);
+const classicMode = runtimeService === 'whoami' ? 'whoami' : runtimeService === 'impostor' ? 'draw-impostor' : 'all';
+const gameManager = runtimeService === 'lobby' || runtimeService === 'caracol'
+  ? null
+  : createGameManager(io, undefined, undefined, classicMode);
+const caracolManager = runtimeService === 'lobby' || runtimeService === 'whoami' || runtimeService === 'impostor'
+  ? null
+  : createCaracolManager(io);
 
 app.disable('x-powered-by');
 
@@ -32,7 +49,12 @@ app.get('/healthz', (request, response) => {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Vary', 'Origin');
   }
-  response.json({ ok: true, rooms: gameManager.getRoomCount() });
+  response.json({
+    ok: true,
+    service: runtimeService,
+    rooms: gameManager?.getRoomCount() ?? 0,
+    caracolOnline: caracolManager?.getOnlineCount() ?? 0,
+  });
 });
 
 // Num deploy dividido (interface na Vercel, servidor na Railway) o servidor é
@@ -59,20 +81,30 @@ if (servesClient) {
 }
 
 io.on('connection', (socket) => {
-  gameManager.bindSocket(socket);
+  gameManager?.bindSocket(socket);
+  caracolManager?.bindSocket(socket);
 });
 
 const port = Number(process.env.PORT) || 3001;
 const host = process.env.HOST || '0.0.0.0';
-httpServer.listen(port, host, () => {
-  console.log(`Quem Sou Eu ouvindo em http://${host}:${port}`);
-});
 
 const shutdown = (): void => {
-  gameManager.dispose();
+  gameManager?.dispose();
+  caracolManager?.dispose();
   io.close();
   httpServer.close(() => process.exit(0));
 };
 
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
+
+const ready = caracolManager ? caracolManager.ready() : Promise.resolve();
+
+void ready.then(() => {
+  httpServer.listen(port, host, () => {
+    console.log(`[${runtimeService}] ouvindo em http://${host}:${port}`);
+  });
+}).catch((error: unknown) => {
+  console.error('[caracol] não foi possível inicializar o mundo persistente', error);
+  process.exitCode = 1;
+});

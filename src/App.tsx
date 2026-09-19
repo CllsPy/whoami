@@ -16,21 +16,29 @@ import { formatDuration } from '../shared/time';
 import { NotesPanel } from './NotesPanel';
 import { clearSession, readSession, saveSession, serverMayHibernate, socket, wakeServer, type SessionData } from './socket';
 import { DrawingFinish, DrawingRound, type DrawingFeedback } from './DrawingGame';
+import { CaracolGame } from './CaracolGame';
 
 type HomeMode = 'create' | 'join';
+type SelectedGame = GameMode | 'caracol';
 type ConnectionState = 'offline' | 'connecting' | 'waking' | 'online' | 'reconnecting';
 type Feedback = { tone: 'neutral' | 'success' | 'error'; message: string } | null;
+type AppProps = { allowedGame?: GameMode };
 
 const MAX_NICKNAME_LENGTH = 24;
 const DEFAULT_GAME_MODE: GameMode = 'whoami';
 const DEFAULT_DRAW_TURN: DrawTurnDuration = 10_000;
 
-function App(): JSX.Element {
+function initialSelectedGame(allowedGame?: GameMode): SelectedGame {
+  if (allowedGame) return allowedGame;
+  return new URLSearchParams(window.location.search).get('game') === 'caracol' ? 'caracol' : DEFAULT_GAME_MODE;
+}
+
+function App({ allowedGame }: AppProps = {}): JSX.Element {
   const [room, setRoom] = useState<RoomView | null>(null);
   const [homeMode, setHomeMode] = useState<HomeMode>('create');
   const [nickname, setNickname] = useState(readSession()?.nickname ?? '');
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [selectedGame, setSelectedGame] = useState<GameMode>(DEFAULT_GAME_MODE);
+  const [selectedGame, setSelectedGame] = useState<SelectedGame>(() => initialSelectedGame(allowedGame));
   const [drawTurnMs, setDrawTurnMs] = useState<DrawTurnDuration>(DEFAULT_DRAW_TURN);
   const [pendingAction, setPendingAction] = useState<{ mode: HomeMode; nickname: string; code: string; gameMode: GameMode; drawTurnMs: DrawTurnDuration } | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('offline');
@@ -226,6 +234,7 @@ function App(): JSX.Element {
 
   function handleHomeSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    if (selectedGame === 'caracol') return;
     const cleanNickname = nickname.trim().replace(/\s+/g, ' ');
     const cleanCode = roomCodeInput.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     if (cleanNickname.length < 2 || cleanNickname.length > MAX_NICKNAME_LENGTH) {
@@ -310,6 +319,10 @@ function App(): JSX.Element {
     socket.emit('room:removeAbsent', { playerId });
   }
 
+  if (!room && selectedGame === 'caracol') {
+    return <CaracolGame onExit={() => { setSelectedGame(DEFAULT_GAME_MODE); setError(null); }} />;
+  }
+
   if (!room) {
     return (
       <main className="app-shell home-shell">
@@ -344,18 +357,32 @@ function App(): JSX.Element {
               </button>
             </div>
             {homeMode === 'create' ? (
-              <div className="game-picker" role="tablist" aria-label="Escolha o jogo">
-                <span className="micro-label">Escolha a brincadeira</span>
-                <div className="game-picker-grid">
-                  <button className={selectedGame === 'whoami' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('whoami'); setError(null); }} role="tab" aria-selected={selectedGame === 'whoami'}>
-                    <span className="game-choice-mark">Q?</span><span><strong>Quem Sou Eu</strong><small>personagens na testa</small></span><b aria-hidden="true">↗</b>
-                  </button>
-                  <button className={selectedGame === 'draw-impostor' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('draw-impostor'); setError(null); }} role="tab" aria-selected={selectedGame === 'draw-impostor'}>
-                    <span className="game-choice-mark draw-choice-mark">✎</span><span><strong>Quem é o impostor</strong><small>um mural · uma palavra</small></span><b aria-hidden="true">↗</b>
-                  </button>
+              allowedGame ? (
+                <div className="game-picker service-game-picker" aria-label="Jogo deste serviço">
+                  <span className="micro-label">Jogo deste endereço</span>
+                  <div className="game-choice is-selected service-game-choice">
+                    <span className={allowedGame === 'whoami' ? 'game-choice-mark' : 'game-choice-mark draw-choice-mark'}>{allowedGame === 'whoami' ? 'Q?' : '✎'}</span>
+                    <span><strong>{allowedGame === 'whoami' ? 'Quem Sou Eu' : 'Quem é o impostor'}</strong><small>{allowedGame === 'whoami' ? 'personagens na testa' : 'um mural · uma palavra'}</small></span>
+                    <b aria-hidden="true">●</b>
+                  </div>
                 </div>
-                {selectedGame === 'draw-impostor' && <label className="field-label game-duration-field" htmlFor="draw-duration">Tempo de cada vez<select id="draw-duration" className="select-input" value={drawTurnMs === null ? 'null' : String(drawTurnMs)} onChange={(event) => setDrawTurnMs(event.target.value === 'null' ? null : Number(event.target.value) as DrawTurnDuration)}><option value="10000">10 segundos</option><option value="20000">20 segundos</option><option value="30000">30 segundos</option><option value="60000">1 minuto</option><option value="null">Sem limite</option></select></label>}
-              </div>
+              ) : (
+                <div className="game-picker" role="tablist" aria-label="Escolha o jogo">
+                  <span className="micro-label">Escolha a brincadeira</span>
+                  <div className="game-picker-grid">
+                    <button className={selectedGame === 'whoami' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('whoami'); setError(null); }} role="tab" aria-selected={selectedGame === 'whoami'}>
+                      <span className="game-choice-mark">Q?</span><span><strong>Quem Sou Eu</strong><small>personagens na testa</small></span><b aria-hidden="true">↗</b>
+                    </button>
+                    <button className={selectedGame === 'draw-impostor' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('draw-impostor'); setError(null); }} role="tab" aria-selected={selectedGame === 'draw-impostor'}>
+                      <span className="game-choice-mark draw-choice-mark">✎</span><span><strong>Quem é o impostor</strong><small>um mural · uma palavra</small></span><b aria-hidden="true">↗</b>
+                    </button>
+                    <button className={selectedGame === 'caracol' ? 'game-choice is-selected' : 'game-choice'} type="button" onClick={() => { setSelectedGame('caracol'); setError(null); }} role="tab" aria-selected={selectedGame === 'caracol'}>
+                      <span className="game-choice-mark caracol-choice-mark">🐌</span><span><strong>Caracol</strong><small>um mapa · uma perseguição</small></span><b aria-hidden="true">↗</b>
+                    </button>
+                  </div>
+                  {selectedGame === 'draw-impostor' && <label className="field-label game-duration-field" htmlFor="draw-duration">Tempo de cada vez<select id="draw-duration" className="select-input" value={drawTurnMs === null ? 'null' : String(drawTurnMs)} onChange={(event) => setDrawTurnMs(event.target.value === 'null' ? null : Number(event.target.value) as DrawTurnDuration)}><option value="10000">10 segundos</option><option value="20000">20 segundos</option><option value="30000">30 segundos</option><option value="60000">1 minuto</option><option value="null">Sem limite</option></select></label>}
+                </div>
+              )
             ) : <p className="join-mode-note"><span aria-hidden="true">✦</span> O código já define qual jogo está esperando você.</p>}
             <form className="stack-form" onSubmit={handleHomeSubmit}>
               {homeMode === 'join' && (

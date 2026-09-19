@@ -1,11 +1,13 @@
-# Quem Sou Eu?
+# GameGameGame
 
-Jogo multiplayer em tempo real com dois modos: descobrir o personagem da própria testa ou desenhar em cadeia para encontrar o impostor.
+Plataforma de jogos multiplayer em tempo real: descobrir o personagem da própria testa, desenhar em cadeia para encontrar o impostor ou sobreviver ao Caracol em um mapa global do Brasil.
 
 ## Modos de jogo
 
 - **Quem Sou Eu:** cada pessoa recebe um personagem que só as outras conseguem ver e tenta descobrir a própria identidade.
 - **Quem é o impostor:** todos menos uma pessoa recebem o mesmo animal ou objeto. Cada jogador desenha por um tempo configurável (10s, 20s, 30s, 1min ou sem limite), a vez passa para o próximo e, depois do último, volta ao primeiro sem encerrar a rodada. Enquanto o mural continua, os desenhistas têm uma acusação e o impostor pode tentar descobrir a palavra.
+
+- **Caracol:** todos compartilham uma única partida persistente. Cada nick escolhe uma cidade brasileira; o caracol parte de Brasília a 0,05 km/h, persegue sobreviventes mesmo quando estão offline, ganha velocidade global por compras e volta ao padrão quando alcança alguém. O desconto pessoal reduz o custo de redirecionar e também de acelerar o caracol. A conta usa senha hasheada, sem recuperação ou troca de senha: a senha não pode ser esquecida.
 
 No novo modo, a palavra é protegida no servidor. Os desenhistas recebem a palavra na própria visão da sala; o impostor recebe apenas o papel secreto. Um traço é validado pelo servidor, sincronizado com todos e só pode ser feito durante a vez correspondente.
 
@@ -22,6 +24,21 @@ npm run dev
 
 Abra <http://localhost:5173> em duas janelas ou dispositivos. O Vite serve a interface e encaminha o Socket.IO para o Node em `localhost:3001`.
 
+## Caracol em produção
+
+O Caracol usa PostgreSQL com o volume Docker `caracol-postgres` para guardar contas,
+moedas, cidades, upgrades, inscrições Push e o único estado do mundo. Defina
+`CARACOL_POSTGRES_PASSWORD` e gere um par VAPID exclusivo para o jogo; nunca
+reutilize chaves de outro projeto:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Guarde `CARACOL_VAPID_PRIVATE_KEY` somente no ambiente secreto do servidor. O
+service worker do Caracol só usa Push quando não existe uma aba visível; inscrições
+que retornam 404/410 são removidas automaticamente.
+
 ## Produção
 
 ```bash
@@ -29,7 +46,21 @@ npm run build
 npm start
 ```
 
-O mesmo processo Node serve `dist/`, o endpoint `/healthz` e os WebSockets. As salas ficam em memória e são perdidas quando o processo reinicia.
+O mesmo processo Node serve `dist/`, o endpoint `/healthz` e os WebSockets. As
+salas dos dois jogos tradicionais ficam em memória e são perdidas quando o
+processo reinicia; o mundo do Caracol é persistido no PostgreSQL.
+
+## GameGameGame separado no Dokploy
+
+O deploy atual continua compatível com o modo `all`, mas a publicação nova pode
+ser dividida em quatro aplicações independentes: lobby, Quem Sou Eu, Quem é o
+impostor e Caracol. Cada aplicação recebe `VITE_GAME_SERVICE` no build e
+`GAME_SERVICE` no runtime, inicializando somente o motor correspondente.
+
+O lobby é o endereço principal. Os jogos podem usar subdomínios próprios para
+manter frontend e Socket.IO na mesma origem. A matriz completa de aplicações,
+domínios e variáveis está em
+[`deploy/gamegamegame/README.md`](deploy/gamegamegame/README.md).
 
 ## Deploy no Render
 
