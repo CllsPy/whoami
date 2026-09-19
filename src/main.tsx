@@ -15,7 +15,7 @@ function readClientService(): ClientService {
 }
 
 const service = readClientService();
-const legacyCaracolRoute = service === 'all' && new URLSearchParams(window.location.search).get('game') === 'caracol';
+const legacyCaracolRoute = service !== 'caracol' && new URLSearchParams(window.location.search).get('game') === 'caracol';
 
 if (legacyCaracolRoute) {
   window.location.replace(import.meta.env.VITE_CARACOL_URL || 'https://caracol.gamegamegame.site/');
