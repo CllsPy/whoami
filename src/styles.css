@@ -970,6 +970,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .map-player-halo { fill: var(--sky); stroke: var(--night); stroke-width: 2; }
 .map-player-you .map-player-halo { fill: var(--acid); }
 .map-player-target .map-player-halo { fill: var(--coral); }
+.map-player-dead .map-player-halo { fill: #8b8498; stroke: var(--paper); stroke-dasharray: 2 2; }
 .map-avatar-player { overflow: visible; }
 .map-avatar-skin { fill: #c78261; stroke: var(--night); stroke-width: 1; }
 .map-avatar-shirt { fill: var(--sky); stroke: var(--night); stroke-width: 1; }
@@ -984,6 +985,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .map-avatar-cap { fill: var(--coral); stroke: var(--night); stroke-width: 1; }
 .map-avatar-cap.cap-trucker { fill: var(--sky); }
 .map-avatar-cap.cap-bucket { fill: #7b7753; }
+.map-dead-avatar { overflow: visible; }
+.map-dead-avatar path:first-child { fill: #bcb5c7; stroke: var(--night); stroke-width: 1; }
+.map-dead-avatar circle { fill: var(--night); }
+.map-dead-avatar path:last-child { fill: none; stroke: var(--night); stroke-width: 1; }
 .map-snail-shadow { fill: rgba(21, 21, 37, 0.26); }
 .map-snail-shell { fill: #d86b51; stroke: var(--paper); stroke-width: 1.4; }
 .map-snail-body { fill: #efb37d; stroke: var(--paper); stroke-width: 1.2; }
@@ -1079,6 +1084,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .legend-you { background: var(--acid); }
 
 .legend-target { background: var(--coral); }
+.legend-skull { display: inline-block; margin-right: 5px; color: #bcb5c7; font-size: 13px; line-height: 8px; vertical-align: -1px; }
 
 .legend-snail { color: var(--paper); }
 
@@ -1158,11 +1164,17 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .caracol-player-row.is-target { border-right: 3px solid var(--coral); padding-right: 6px; }
 
+.caracol-player-row.is-dead { opacity: 0.78; background: rgba(139, 132, 152, 0.08); }
+
+.caracol-skull { display: grid; width: 39px; height: 37px; flex: 0 0 39px; place-items: center; color: #8b8498; font-size: 24px; line-height: 1; }
+
 .online-mark, .offline-mark { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--acid-dark); }
 
 .offline-mark { background: var(--paper-shadow); }
 
 .target-badge { color: var(--coral); font: 8px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+
+.dead-badge { color: #8b8498; font: 8px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 
 .caracol-sync-banner { display: flex; align-items: center; gap: 9px; width: min(1260px, 100%); margin: 17px auto -28px; border: 1px solid rgba(255, 116, 95, 0.35); padding: 10px 13px; color: #ffd8d1; background: rgba(255, 116, 95, 0.1); font: 10px/1.4 var(--mono); }
 

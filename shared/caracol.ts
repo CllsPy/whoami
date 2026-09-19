@@ -74,6 +74,7 @@ export interface CaracolCity {
 export interface CaracolPlayerView {
   accountId: string;
   nickname: string;
+  alive: boolean;
   city: CaracolCity;
   online: boolean;
   isYou: boolean;
