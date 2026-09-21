@@ -918,6 +918,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .caracol-shop-drawer button:focus-visible, .caracol-history-drawer button:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
 
+/* Retratos no traço Waldo: um desenho SVG por personagem, recortado em círculo.
+   O tamanho vem de --medallion-size, e a media query sobrescreve width e height.
+   O anel é box-shadow, por fora do círculo, para o desenho ter o mesmo tamanho em
+   todos os tons. Cinza é só de quem morreu; peça sem saldo continua em cor. */
+.caracol-avatar { position: relative; display: inline-block; width: var(--medallion-size); height: var(--medallion-size); flex: 0 0 auto; vertical-align: middle; }
+.caracol-medallion { display: block; width: 100%; height: 100%; overflow: hidden; border-radius: 50%; background: #fffdf8; box-shadow: 0 0 0 1.5px var(--night); }
+.caracol-medallion .caracol-figure { display: block; width: 100%; height: 100%; }
+.caracol-medallion.tone-you { box-shadow: 0 0 0 2.5px var(--acid-dark); }
+.caracol-medallion.tone-target { box-shadow: 0 0 0 2.5px var(--coral); }
+.caracol-medallion.tone-equipped { box-shadow: 0 0 0 3px var(--acid), 0 0 0 5px var(--night); }
+.caracol-medallion.tone-unaffordable { box-shadow: none; outline: 2px dashed var(--muted-dark); outline-offset: 1px; }
+.caracol-medallion.tone-dead { filter: grayscale(1); opacity: 0.55; }
+.caracol-avatar-badge { position: absolute; right: -6%; width: clamp(14px, 30%, 26px); height: clamp(14px, 30%, 26px); }
+.caracol-avatar-badge svg { display: block; width: 100%; height: 100%; }
+.caracol-avatar-badge.badge-check { top: -6%; }
+.caracol-avatar-badge.badge-skull { bottom: -6%; }
+.caracol-shop-preview-full .caracol-figure { display: block; width: auto; height: 176px; }
+
 /* Avatares: uma base simples e os cinco acessórios são camadas, então o mesmo
    personagem pode aparecer no mapa, na lista e na loja sem imagens externas. */
 .cosmetic-avatar { position: relative; display: inline-block; width: 76px; height: 76px; flex: 0 0 auto; vertical-align: middle; }
@@ -1367,6 +1385,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .caracol-shop-grid { grid-template-columns: repeat(3, minmax(94px, 1fr)); gap: 7px; overflow-x: auto; padding-bottom: 4px; }
   .caracol-shop-item { min-width: 94px; padding: 8px; }
   .caracol-shop-item-preview { min-height: 88px; }
+  .caracol-shop-item-preview .caracol-avatar { width: 68px; height: 68px; }
+  .caracol-shop-item-preview .caracol-figure > g { filter: none; }
+  .caracol-shop-preview-full .caracol-figure { height: 120px; }
+  .caracol-shop-preview > .caracol-avatar { width: 72px; height: 72px; }
   .caracol-shop-item-copy strong { font-size: 12px; }
   .caracol-shop-item-copy span, .shop-item-button { font-size: 8px; }
 }
