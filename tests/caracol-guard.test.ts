@@ -97,9 +97,12 @@ describe('guarda do novo design', () => {
           seen += 1;
           continue;
         }
+        // O elemento conta, não a grafia: `span.caracol-medallion` e `.is-dead .tone-dead`
+        // chegam ao mesmo medalhão. As classes `.tone-*` só existem no medalhão e no anel.
         const target = selector.split(/[\s>+~]+/).pop()!;
-        if (/^\.caracol-medallion([.:[]|$)/.test(target)) expect(body, selector).not.toMatch(/border-radius|overflow|background|filter|opacity/);
-        if (/^\.map-medallion-ring([.:[]|$)/.test(target)) expect(body, selector).not.toMatch(/stroke\s*:/);
+        const tone = /\.tone-[\w-]+/.test(target);
+        if (tone || /\.caracol-medallion(?![\w-])/.test(target)) expect(body, selector).not.toMatch(/border-radius|overflow|background|filter|opacity/);
+        if (tone || /\.map-medallion-ring(?![\w-])/.test(target)) expect(body, selector).not.toMatch(/stroke\s*:/);
       }
     }
     expect(seen).toBe(canonical.size);

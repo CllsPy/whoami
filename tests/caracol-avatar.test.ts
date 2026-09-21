@@ -184,7 +184,7 @@ describe('tokens do mapa', () => {
       const markup = token(radius, tone);
       expect(markup).toContain('transform="translate(120 80)"');
       expect(markup).toMatch(new RegExp(`<clipPath id="[^"]+"><circle r="${radius}"></circle></clipPath>`));
-      expect(markup).toMatch(new RegExp(`<circle r="${radius}" class="map-medallion-ring tone-${tone}"`));
+      expect(markup).toContain(`<circle r="${radius}" class="map-medallion-ring tone-${tone}" fill="none" stroke-width="2.5"></circle>`);
       expect(markup).not.toContain('feColorMatrix');
       expect(markup).not.toContain('stroke-dasharray');
     });
@@ -203,7 +203,7 @@ describe('tokens do mapa', () => {
     const filterId = /<filter id="([^"]+)"><feColorMatrix type="saturate" values="0"><\/feColorMatrix><\/filter>/.exec(markup)?.[1];
     expect(filterId).toBeDefined();
     expect(markup).toContain(`<g filter="url(#${filterId})">`);
-    expect(markup).toMatch(/<circle r="7" class="map-medallion-ring tone-dead"[^>]* stroke-dasharray="2 2"/);
+    expect(markup).toContain('<circle r="7" class="map-medallion-ring tone-dead" fill="none" stroke-width="2.5" stroke-dasharray="2 2"></circle>');
   });
 
   it('desenha o caracol de corpo inteiro, 40 × 40, com o pé sobre o ponto (MAPA-02)', () => {
