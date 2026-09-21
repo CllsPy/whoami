@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { renderCaracolSplash } from '../src/caracolArt/splash';
 
@@ -31,5 +32,9 @@ describe('splash do PWA', () => {
 
   it('gera o mesmo texto a cada chamada', () => {
     expect(renderCaracolSplash()).toBe(splash);
+  });
+
+  it('está igual ao arquivo publicado; rode npm run splash:caracol se o desenho mudou (SPL-03)', () => {
+    expect(readFileSync(new URL('../public/icons/caracol-splash.svg', import.meta.url), 'utf8')).toBe(splash);
   });
 });
