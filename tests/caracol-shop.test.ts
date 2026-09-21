@@ -71,6 +71,13 @@ function layersOf(markup: string): string[] {
   return Array.from(markup.matchAll(/data-layer="([^"]+)"/g), (match) => match[1]!);
 }
 
+function section(markup: string, from: string, to: string): string {
+  const start = markup.indexOf(from);
+  const end = markup.indexOf(to, start);
+  if (start < 0 || end < 0) throw new Error(`trecho ${from} não encontrado`);
+  return markup.slice(start, end);
+}
+
 function medallionTone(markup: string): string | undefined {
   return /class="caracol-medallion tone-([\w-]+)"/.exec(markup)?.[1];
 }
@@ -145,5 +152,34 @@ describe('cards da loja', () => {
     const state = sampleState({ coins: 40 });
     state.shop.catalog = state.shop.catalog.map((item) => item.id === 'shirt-striped' ? { ...item, price: 25 } : item);
     expect(medallionTone(card(drawer('player', state), 'Listrada'))).toBe('default');
+  });
+});
+
+describe('prévia e abas da loja', () => {
+  it('mostra o personagem da aba de corpo inteiro e em retrato, com o outfit equipado (LOJA-06)', () => {
+    const player = section(drawer('player'), 'caracol-shop-preview', 'caracol-shop-body');
+    expect(player).toContain(`viewBox="${caracolArtViewBox('player', 'full')}"`);
+    expect(player).toMatch(new RegExp(`class="caracol-avatar"[^>]*aria-label="Seu personagem vestido".*viewBox="${caracolArtViewBox('player', 'portrait')}"`));
+    expect(layersOf(player).filter((layer) => layer === 'pants-jeans')).toHaveLength(2);
+    expect(layersOf(player).filter((layer) => layer === 'glasses-dark')).toHaveLength(2);
+
+    const snail = section(drawer('snail'), 'caracol-shop-preview', 'caracol-shop-body');
+    expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'full')}"`);
+    expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
+    expect(layersOf(snail).filter((layer) => layer === 'cap-trucker')).toHaveLength(2);
+  });
+
+  it('mostra nas abas o retrato de 32 px de cada personagem, seja qual for a aba ativa (LOJA-07)', () => {
+    for (const active of ['player', 'snail'] as const) {
+      const tabs = section(drawer(active), 'caracol-shop-tabs', 'caracol-shop-preview').split('<button ').slice(1);
+      const you = tabs.find((html) => html.includes('<span>Você</span>'))!;
+      const snail = tabs.find((html) => html.includes('<span>Caracol</span>'))!;
+      expect(you).toContain('--medallion-size:32px');
+      expect(you).toContain(`viewBox="${caracolArtViewBox('player', 'portrait')}"`);
+      expect(layersOf(you)).toContain('pants-jeans');
+      expect(snail).toContain('--medallion-size:32px');
+      expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
+      expect(layersOf(snail)).toContain('cap-trucker');
+    }
   });
 });

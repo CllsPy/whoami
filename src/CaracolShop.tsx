@@ -6,7 +6,7 @@ import {
   type CaracolOutfit,
   type CaracolStateView,
 } from '../shared/caracol';
-import { CaracolMedallion } from './CaracolAvatar';
+import { CaracolFigure, CaracolMedallion } from './CaracolAvatar';
 import { caracolShopItemTone } from './caracolArt/model';
 
 // A gaveta da loja fica fora de CaracolGame.tsx, que abre o socket no import,
@@ -59,11 +59,12 @@ export function CaracolShopDrawer({ state, open, tab, onTabChange, onClose, onPu
       <button className="caracol-history-close" type="button" onClick={onClose} aria-label="Fechar loja">×</button>
     </div>
     <div className="caracol-shop-tabs" role="tablist" aria-label="Guarda-roupa">
-      <button type="button" role="tab" aria-selected={tab === 'player'} className={tab === 'player' ? 'active' : ''} onClick={() => onTabChange('player')}><CosmeticAvatar wearer="player" outfit={state.shop.player.outfit} size="tiny" label="Seu personagem" /><span>Você</span></button>
-      <button type="button" role="tab" aria-selected={tab === 'snail'} className={tab === 'snail' ? 'active' : ''} onClick={() => onTabChange('snail')}><CosmeticAvatar wearer="snail" outfit={state.shop.snail.outfit} size="tiny" label="Caracol" /><span>Caracol</span></button>
+      <button type="button" role="tab" aria-selected={tab === 'player'} className={tab === 'player' ? 'active' : ''} onClick={() => onTabChange('player')}><CaracolMedallion wearer="player" outfit={state.shop.player.outfit} size={32} label="Seu personagem" /><span>Você</span></button>
+      <button type="button" role="tab" aria-selected={tab === 'snail'} className={tab === 'snail' ? 'active' : ''} onClick={() => onTabChange('snail')}><CaracolMedallion wearer="snail" outfit={state.shop.snail.outfit} size={32} label="Caracol" /><span>Caracol</span></button>
     </div>
     <div className="caracol-shop-preview paper-card">
-      <CosmeticAvatar wearer={tab} outfit={wardrobe.outfit} size="large" label={tab === 'player' ? 'Seu personagem vestido' : 'Caracol vestido'} />
+      <span className="caracol-shop-preview-full"><CaracolFigure wearer={tab} outfit={wardrobe.outfit} crop="full" sizePx={176} /></span>
+      <CaracolMedallion wearer={tab} outfit={wardrobe.outfit} size={112} label={tab === 'player' ? 'Seu personagem vestido' : 'Caracol vestido'} />
       <div><span className="micro-label">Visual atual</span><strong>{tab === 'player' ? state.you.nickname : 'Caracol global'}</strong><p>{wardrobe.ownedItemIds.length} de {state.shop.catalog.length} peças desbloqueadas</p></div>
     </div>
     <div className="caracol-shop-body">
