@@ -21,8 +21,6 @@ export interface CaracolShopDrawerProps {
   onClose: () => void;
   onPurchase: (itemId: string) => void;
   onEquip: (slot: CaracolCosmeticSlot, itemId: string | null) => void;
-  /** Estado inicial do provador. O jogo abre sem prova; os testes renderizam a gaveta no meio de uma. */
-  initialPreview?: ShopPreviewState;
 }
 
 // Provador: passar o ponteiro ou o foco num card veste a peça na prévia, e o
@@ -81,8 +79,8 @@ export function shopCardHandlers(dispatch: (action: ShopPreviewAction) => void, 
   };
 }
 
-export function CaracolShopDrawer({ state, open, tab, onTabChange, onClose, onPurchase, onEquip, initialPreview = NO_PREVIEW }: CaracolShopDrawerProps): JSX.Element {
-  const [trial, dispatch] = useReducer(shopPreviewReducer, initialPreview);
+export function CaracolShopDrawer({ state, open, tab, onTabChange, onClose, onPurchase, onEquip }: CaracolShopDrawerProps): JSX.Element {
+  const [trial, dispatch] = useReducer(shopPreviewReducer, NO_PREVIEW);
   const [trialTab, setTrialTab] = useState(tab);
   // A aba é controlada pelo jogo, que também a troca ao abrir a loja: a prova cai
   // no mesmo render da troca, sem um quadro com a peça no outro personagem.
