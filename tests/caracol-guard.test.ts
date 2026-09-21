@@ -84,4 +84,24 @@ describe('guarda do novo design', () => {
     expect(game).toContain('<CaracolMapLegend snailOutfit={state.world.snail.outfit} />');
     expect(game).toContain('<CaracolPlayersCard players={state.players} targetAccountId={state.world.snail.targetAccountId} />');
   });
+
+  it('não deixa outra regra da folha desfazer o círculo, o cinza ou a cor do anel (ARTE-08, LISTA-03, MAPA-01)', () => {
+    // As regras acima fixam as declarações principais; esta pega a cascata, como
+    // uma regra mais específica dentro de uma media query que tire o círculo.
+    const canonical = new Set(['.caracol-medallion', '.caracol-medallion.tone-dead', '.map-medallion-ring', '.map-medallion-ring.tone-you', '.map-medallion-ring.tone-target', '.map-medallion-ring.tone-dead']);
+    const css = STYLES.replace(/\/\*[\s\S]*?\*\//g, '');
+    let seen = 0;
+    for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const selector of selectors!.split(',').map((part) => part.trim().replace(/\s+/g, ' '))) {
+        if (canonical.has(selector)) {
+          seen += 1;
+          continue;
+        }
+        const target = selector.split(/[\s>+~]+/).pop()!;
+        if (/^\.caracol-medallion([.:[]|$)/.test(target)) expect(body, selector).not.toMatch(/border-radius|overflow|background|filter|opacity/);
+        if (/^\.map-medallion-ring([.:[]|$)/.test(target)) expect(body, selector).not.toMatch(/stroke\s*:/);
+      }
+    }
+    expect(seen).toBe(canonical.size);
+  });
 });
