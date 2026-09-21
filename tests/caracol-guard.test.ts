@@ -26,4 +26,10 @@ describe('guarda do novo design', () => {
     expect(STYLES).toContain('.caracol-medallion');
     expect(STYLES).not.toContain('.cosmetic-');
   });
+
+  it('não sobra desenho antigo de token do mapa', () => {
+    for (const { file, text } of componentSources()) {
+      expect(text, file).not.toMatch(/mapPlayerAvatar|mapDeadAvatar|mapSnailAvatar/);
+    }
+  });
 });

@@ -60,7 +60,8 @@ export type PlayerArtLayer =
   | CaracolArtItemId;
 export type SnailArtLayer = 'body' | 'stalks' | 'head' | CaracolArtItemId;
 export type CaracolArtLayer = PlayerArtLayer | SnailArtLayer;
-export type CaracolMedallionTone = 'default' | 'you' | 'target' | 'dead' | 'equipped' | 'unaffordable';
+export type CaracolPlayerTone = 'default' | 'you' | 'target' | 'dead';
+export type CaracolMedallionTone = CaracolPlayerTone | 'equipped' | 'unaffordable';
 
 /** Abaixo disso o tremido da tinta só borra o traço, e o filtro custaria em cada token do mapa. */
 export const CARACOL_INK_MIN_PX = 56;
@@ -118,7 +119,7 @@ export function caracolArtLayers(wearer: CaracolCosmeticWearer, outfit: CaracolO
 }
 
 /** Morte é o fato mais forte, alvo é perigo imediato, e "você" já tem a faixa ácida na linha. */
-export function caracolPlayerTone({ isYou, isTarget, alive }: { isYou: boolean; isTarget: boolean; alive: boolean }): CaracolMedallionTone {
+export function caracolPlayerTone({ isYou, isTarget, alive }: { isYou: boolean; isTarget: boolean; alive: boolean }): CaracolPlayerTone {
   if (!alive) return 'dead';
   if (isTarget) return 'target';
   return isYou ? 'you' : 'default';

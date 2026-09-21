@@ -8,6 +8,7 @@ import {
   sameCaracolOutfit,
   type CaracolArtCrop,
   type CaracolMedallionTone,
+  type CaracolPlayerTone,
 } from './caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from './caracolArt/PlayerArt';
 import { SNAIL_ART } from './caracolArt/SnailArt';
@@ -81,15 +82,13 @@ export function CaracolMedallion({ wearer, outfit, crop = 'portrait', size, tone
   </span>;
 }
 
-export type CaracolMapTone = Extract<CaracolMedallionTone, 'default' | 'you' | 'target' | 'dead'>;
-
 /**
  * O retrato de um jogador dentro do SVG do mapa. A cor do anel vem de
  * `.map-medallion-ring.tone-*`; no celular o token vira um ponto de 6 a 8 px,
  * e é a cor do anel que carrega o estado. O cinza do morto é filtro SVG, que
  * dentro do mapa funciona igual em todo navegador.
  */
-export function CaracolMapPlayer({ outfit, x, y, radius, tone }: { outfit: CaracolOutfit; x: number; y: number; radius: number; tone: CaracolMapTone }): JSX.Element {
+export function CaracolMapPlayer({ outfit, x, y, radius, tone }: { outfit: CaracolOutfit; x: number; y: number; radius: number; tone: CaracolPlayerTone }): JSX.Element {
   const uid = useId();
   const dead = tone === 'dead';
   return <g transform={`translate(${x} ${y})`}>

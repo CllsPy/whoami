@@ -2,7 +2,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { emptyCaracolOutfit, type CaracolPlayerView, type CaracolStateView } from '../shared/caracol';
-import { BrazilMap, type GeoFeatureCollection } from '../src/CaracolMap';
+import { caracolArtViewBox } from '../src/caracolArt/model';
+import { BrazilMap, CaracolMapLegend, type GeoFeatureCollection } from '../src/CaracolMap';
 
 // O mapa vive fora de CaracolGame.tsx para os tokens e o Blooper serem testáveis em node.
 
@@ -94,5 +95,55 @@ describe('mapa do Brasil', () => {
   it('escreve o nick só de você, do alvo e de quem morreu', () => {
     const labels = Array.from(map().matchAll(/<text[^>]*>([^<]+)<\/text>/g), (match) => match[1]);
     expect(labels.sort()).toEqual(['Ana', 'Bia', 'Caio']);
+  });
+});
+
+describe('retratos no mapa', () => {
+  function token(markup: string, nickname: string): string {
+    const tokens = markup.split('<g class="map-player').slice(1);
+    const found = tokens.find((html) => html.includes(`<title>${nickname} · `));
+    if (!found) throw new Error(`token de ${nickname} não encontrado`);
+    return found;
+  }
+
+  it('dá a cada jogador o raio e o anel do seu tom (MAPA-01, MAPA-03)', () => {
+    const markup = map();
+    expect(token(markup, 'Ana')).toMatch(/<circle r="9" class="map-medallion-ring tone-you"/);
+    expect(token(markup, 'Bia')).toMatch(/<circle r="9" class="map-medallion-ring tone-target"/);
+    expect(token(markup, 'Caio')).toMatch(/<circle r="7" class="map-medallion-ring tone-dead"[^>]* stroke-dasharray="2 2"/);
+    expect(token(markup, 'Caio')).toContain('<feColorMatrix type="saturate" values="0">');
+    expect(token(markup, 'Duda')).toMatch(/<circle r="7" class="map-medallion-ring tone-default"/);
+    for (const nickname of ['Ana', 'Bia', 'Caio', 'Duda']) {
+      expect(token(markup, nickname)).toContain(`viewBox="${caracolArtViewBox('player', 'portrait')}"`);
+    }
+  });
+
+  it('desenha o caracol de corpo inteiro com o outfit global, e some com a rota no Blooper (MAPA-02, MAPA-04)', () => {
+    const markup = map();
+    const snail = markup.slice(markup.indexOf('<g class="snail-token">'));
+    expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'full')}"`);
+    expect(snail).toContain('data-layer="cap-flat"');
+    const hidden = map(mapState({ snail: { lat: null, lon: null } }));
+    expect(hidden).not.toContain(`viewBox="${caracolArtViewBox('snail', 'full')}"`);
+    expect(hidden).not.toContain('snail-route');
+  });
+
+  it('desenha os tokens na ordem mortos, demais, alvo, você (MAPA-06)', () => {
+    const players = [
+      player('Ana', -23.55, -46.63, { isYou: true }),
+      player('Duda', -3.1, -60.0),
+      player('Bia', -22.9, -43.2),
+      player('Caio', -8.05, -34.9, { alive: false }),
+      player('Eva', -12.97, -38.5),
+    ];
+    const order = Array.from(map(mapState({ players })).matchAll(/<g class="map-player[^"]*">.*?<title>(\w+) · /g), (match) => match[1]);
+    expect(order).toEqual(['Caio', 'Duda', 'Eva', 'Bia', 'Ana']);
+  });
+
+  it('marca mortos na legenda com o mesmo anel tracejado cinza do token (MAPA-05)', () => {
+    const legend = renderToStaticMarkup(createElement(CaracolMapLegend, { snailOutfit: emptyCaracolOutfit() }));
+    expect(legend).not.toContain('☠');
+    const dead = legend.slice(0, legend.indexOf(' mortos</span>'));
+    expect(dead.slice(dead.lastIndexOf('<span>'))).toMatch(/<svg class="legend-ring"[^>]*aria-hidden="true"><circle[^>]* class="map-medallion-ring tone-dead"[^>]* stroke-dasharray="2 2"/);
   });
 });
