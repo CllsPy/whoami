@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CARACOL_COSMETIC_CATALOG, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
-import { CaracolFigure, CaracolMedallion, sameFigureProps } from '../src/CaracolAvatar';
+import { CaracolFigure, CaracolMapPlayer, CaracolMapSnail, CaracolMedallion, sameFigureProps } from '../src/CaracolAvatar';
 import { CARACOL_ART_ITEM_IDS, caracolArtViewBox, type CaracolArtCrop, type CaracolMedallionTone } from '../src/caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from '../src/caracolArt/PlayerArt';
 import { SNAIL_ART } from '../src/caracolArt/SnailArt';
@@ -162,5 +162,46 @@ describe('CaracolMedallion', () => {
 
   it('usa o recorte de retrato quando não recebe recorte', () => {
     expect(medallion({ wearer: 'snail' })).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
+  });
+});
+
+describe('tokens do mapa', () => {
+  const outfit: CaracolOutfit = { ...emptyCaracolOutfit(), cap: 'cap-bucket' };
+
+  function token(radius: number, tone: 'default' | 'you' | 'target' | 'dead'): string {
+    return inSvg(createElement(CaracolMapPlayer, { outfit, x: 120, y: 80, radius, tone }));
+  }
+
+  for (const [radius, tone] of [[9, 'you'], [9, 'target'], [7, 'default']] as const) {
+    it(`recorta o retrato em círculo de raio ${radius} com o anel ${tone} (MAPA-01)`, () => {
+      const markup = token(radius, tone);
+      expect(markup).toContain('transform="translate(120 80)"');
+      expect(markup).toMatch(new RegExp(`<clipPath id="[^"]+"><circle r="${radius}"></circle></clipPath>`));
+      expect(markup).toMatch(new RegExp(`<circle r="${radius}" class="map-medallion-ring tone-${tone}"`));
+      expect(markup).not.toContain('feColorMatrix');
+      expect(markup).not.toContain('stroke-dasharray');
+    });
+  }
+
+  it('usa o recorte de retrato, do tamanho do círculo e sem tinta', () => {
+    const markup = token(9, 'default');
+    expect(markup).toMatch(new RegExp(`<svg class="caracol-figure" viewBox="${caracolArtViewBox('player', 'portrait')}" x="-9" y="-9" width="18" height="18"`));
+    expect(markup).not.toMatch(/filter="url\(#[^)]*ink/);
+    expect(markup).not.toContain('feTurbulence');
+    expect(layersOf(markup)).toContain('cap-bucket');
+  });
+
+  it('põe o retrato de quem morreu em cinza, dentro de um anel tracejado (MAPA-03)', () => {
+    const markup = token(7, 'dead');
+    const filterId = /<filter id="([^"]+)"><feColorMatrix type="saturate" values="0"><\/feColorMatrix><\/filter>/.exec(markup)?.[1];
+    expect(filterId).toBeDefined();
+    expect(markup).toContain(`<g filter="url(#${filterId})">`);
+    expect(markup).toMatch(/<circle r="7" class="map-medallion-ring tone-dead"[^>]* stroke-dasharray="2 2"/);
+  });
+
+  it('desenha o caracol de corpo inteiro, 40 × 40, com o pé sobre o ponto (MAPA-02)', () => {
+    const markup = inSvg(createElement(CaracolMapSnail, { outfit, x: 300, y: 200 }));
+    expect(markup).toContain(`<svg class="caracol-figure" viewBox="${caracolArtViewBox('snail', 'full')}" x="280" y="162" width="40" height="40"`);
+    expect(layersOf(markup)).toContain('cap-bucket');
   });
 });

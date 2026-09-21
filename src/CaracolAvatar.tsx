@@ -81,6 +81,37 @@ export function CaracolMedallion({ wearer, outfit, crop = 'portrait', size, tone
   </span>;
 }
 
+export type CaracolMapTone = Extract<CaracolMedallionTone, 'default' | 'you' | 'target' | 'dead'>;
+
+/**
+ * O retrato de um jogador dentro do SVG do mapa. A cor do anel vem de
+ * `.map-medallion-ring.tone-*`; no celular o token vira um ponto de 6 a 8 px,
+ * e é a cor do anel que carrega o estado. O cinza do morto é filtro SVG, que
+ * dentro do mapa funciona igual em todo navegador.
+ */
+export function CaracolMapPlayer({ outfit, x, y, radius, tone }: { outfit: CaracolOutfit; x: number; y: number; radius: number; tone: CaracolMapTone }): JSX.Element {
+  const uid = useId();
+  const dead = tone === 'dead';
+  return <g transform={`translate(${x} ${y})`}>
+    <defs>
+      <clipPath id={`${uid}clip`}><circle r={radius} /></clipPath>
+      {dead && <filter id={`${uid}gray`}><feColorMatrix type="saturate" values="0" /></filter>}
+    </defs>
+    <g filter={dead ? `url(#${uid}gray)` : undefined}>
+      <circle r={radius} fill={C.white} />
+      <g clipPath={`url(#${uid}clip)`}>
+        <CaracolFigure wearer="player" outfit={outfit} crop="portrait" sizePx={radius * 2} x={-radius} y={-radius} width={radius * 2} height={radius * 2} />
+      </g>
+    </g>
+    <circle r={radius} className={`map-medallion-ring tone-${tone}`} fill="none" strokeWidth={2.5} strokeDasharray={dead ? '2 2' : undefined} />
+  </g>;
+}
+
+/** O caracol de corpo inteiro no mapa: a concha é a silhueta que se reconhece de longe. */
+export function CaracolMapSnail({ outfit, x, y }: { outfit: CaracolOutfit; x: number; y: number }): JSX.Element {
+  return <CaracolFigure wearer="snail" outfit={outfit} crop="full" sizePx={40} x={x - 20} y={y - 38} width={40} height={40} />;
+}
+
 function CheckBadge(): JSX.Element {
   return <svg viewBox="0 0 20 20" aria-hidden="true">
     <circle cx={10} cy={10} r={8.5} fill={C.acid} stroke={C.ink} strokeWidth={2} />
