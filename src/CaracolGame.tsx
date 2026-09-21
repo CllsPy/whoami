@@ -12,9 +12,10 @@ import type {
 } from '../shared/caracol';
 import { CARACOL_BRAZILIA, CARACOL_HISTORY_PAGE_SIZE } from '../shared/caracol';
 import { brazilianCities, type BrazilianCity } from '../shared/cities';
-import { PlayerEffects, RouletteCard, RouletteReveal } from './CaracolRoulette';
+import { RouletteCard, RouletteReveal } from './CaracolRoulette';
 import { caracolSocket } from './caracolSocket';
 import { CaracolMedallion } from './CaracolAvatar';
+import { CaracolPlayersCard } from './CaracolPlayers';
 import { CaracolShopDrawer } from './CaracolShop';
 import { serverMayHibernate, wakeServer } from './socket';
 
@@ -614,7 +615,7 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
               {feedback && <InlineNotice tone={feedback.tone}>{feedback.message}</InlineNotice>}
             </div>
             <div className="caracol-alert-card paper-card"><div><span className="micro-label">Fique sabendo</span><strong>{iosDevice && !standaloneMode ? 'Instale para receber alertas.' : 'O caracol não pede licença.'}</strong><p>{iosDevice && !standaloneMode ? 'No iPhone: Compartilhar → Adicionar à Tela de Início. Abra o ícone e ligue os alertas por lá.' : 'Ative o alerta para ser avisado mesmo com o jogo fechado.'}</p></div><button className="text-button" type="button" onClick={() => void enablePush()} disabled={pushStatus === 'working' || pushStatus === 'enabled' || (iosDevice && !standaloneMode)}>{pushStatus === 'enabled' ? 'Alertas ligados' : pushStatus === 'working' ? 'Ligando…' : iosDevice && !standaloneMode ? 'Instale primeiro' : 'Ativar alertas'}</button></div>
-            <div className="caracol-players paper-card"><div className="panel-heading"><div><span className="micro-label">No mapa</span><h2>{state.players.length} pessoa{state.players.length === 1 ? '' : 's'}</h2></div><span className="panel-mark">AO VIVO</span></div><div className="caracol-player-list">{state.players.map((player) => <div className={`caracol-player-row ${player.isYou ? 'is-you' : ''} ${player.alive ? '' : 'is-dead'} ${player.accountId === state.world.snail.targetAccountId ? 'is-target' : ''}`} key={player.accountId}>{player.alive ? <CaracolMedallion wearer="player" outfit={player.outfit} size={40} label={`${player.nickname} vestido`} /> : <span className="caracol-skull" role="img" aria-label={`${player.nickname} morta`}>☠</span>}<div><strong>{player.nickname}{player.isYou ? <small> você</small> : null}</strong><span>{player.alive ? `${player.city.name} · ${player.city.uf}` : `morta · ${player.city.name} · ${player.city.uf}`}</span></div><PlayerEffects itemIds={player.effectItemIds} /><i className={player.online ? 'online-mark' : 'offline-mark'} title={player.online ? 'online' : 'offline'} />{!player.alive && <b className="dead-badge">morta</b>}{player.accountId === state.world.snail.targetAccountId && <b className="target-badge">alvo</b>}</div>)}</div></div>
+            <CaracolPlayersCard players={state.players} targetAccountId={state.world.snail.targetAccountId} />
           </aside>
         </section>
       )}
