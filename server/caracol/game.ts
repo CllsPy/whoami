@@ -4,15 +4,25 @@ import type { Server, Socket } from 'socket.io';
 import {
   type CaracolActionResult,
   type CaracolActionFailure,
+  type CaracolBoomerangInput,
   CARACOL_COSMETIC_CATALOG,
+  CARACOL_ROULETTE_CATALOG,
+  CARACOL_ROULETTE_COOLDOWN_MS,
+  caracolRouletteItemById,
+  type CaracolCosmeticItem,
   type CaracolDeathPayload,
+  type CaracolEffectView,
   type CaracolHistoryInput,
   type CaracolHistoryResult,
   type CaracolLoginInput,
+  type CaracolNoticePayload,
   type CaracolPushSubscriptionInput,
   type CaracolRedirectInput,
   type CaracolRegisterInput,
   type CaracolResumeInput,
+  type CaracolRouletteItem,
+  type CaracolRouletteItemId,
+  type CaracolRouletteResult,
   type CaracolSelectCityInput,
   type CaracolCosmeticSlot,
   type CaracolCosmeticWearer,
@@ -42,8 +52,11 @@ import { normalizeText } from '../normalization';
 import { distanceKm, moveTowards, type GeoPoint } from './geo';
 import {
   CaracolNicknameTakenError,
+  caracolEffectId,
   createCaracolStore,
   type CaracolAccountRecord,
+  type CaracolCommit,
+  type CaracolEffectRecord,
   type CaracolPushRecord,
   type CaracolStore,
   type CaracolHistoryRecord,
@@ -62,7 +75,17 @@ interface RuntimeAccount extends CaracolAccountRecord {
 interface CaracolManagerOptions {
   store?: CaracolStore;
   clock?: () => number;
+  /** Sorteio da roleta; injetável como o relógio para os testes escolherem o item. */
+  random?: () => number;
   autoTick?: boolean;
+}
+
+/** O que um item sorteado faz na conta: aplicado primeiro ao rascunho gravado, depois à memória. */
+interface RouletteOutcome {
+  effect: CaracolEffectRecord | null;
+  apply: (account: CaracolAccountRecord) => void;
+  detail: string;
+  amount: number | null;
 }
 
 const MIN_NICKNAME_LENGTH = 2;
@@ -71,11 +94,15 @@ const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 72;
 const APPROACHING_ETA_MS = 10 * 60_000;
 const TICK_MS = 1_000;
+const BANANA_SPEED_FACTOR = 1.5;
+const BOOMERANG_SHARE_DIVISOR = 5;
 
 export class CaracolGameManager {
   private readonly store: CaracolStore;
   private readonly clock: () => number;
+  private readonly random: () => number;
   private readonly accounts = new Map<string, RuntimeAccount>();
+  private readonly effects = new Map<string, CaracolEffectRecord>();
   private readonly sockets = new Map<string, CaracolSocket>();
   private readonly sessions = new Map<string, string>();
   private readonly pushSubscriptions = new Map<string, CaracolPushRecord>();
@@ -90,6 +117,7 @@ export class CaracolGameManager {
   constructor(private readonly io: CaracolIo, options: CaracolManagerOptions = {}) {
     this.store = options.store ?? createCaracolStore();
     this.clock = options.clock ?? (() => Date.now());
+    this.random = options.random ?? Math.random;
     this.push = new CaracolPushService((endpoint) => this.removePushSubscription(endpoint));
     this.readyPromise = this.initialize();
     if (options.autoTick !== false) {
@@ -112,6 +140,8 @@ export class CaracolGameManager {
     }
     this.pushSubscriptions.clear();
     for (const subscription of snapshot.pushSubscriptions) this.pushSubscriptions.set(subscription.endpoint, subscription);
+    this.effects.clear();
+    for (const effect of snapshot.effects) this.effects.set(effect.id, effect);
 
     await this.tickInternal(this.clock(), false);
   }
@@ -128,6 +158,10 @@ export class CaracolGameManager {
     socket.on('caracol:buy-discount', (ack) => { void this.afterReady(() => this.buyDiscount(socket, ack)); });
     socket.on('caracol:shop-purchase', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopPurchase(socket, payload, ack))); });
     socket.on('caracol:shop-equip', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopEquip(socket, payload, ack))); });
+    // Roleta e bumerangue usam a mesma fila da loja: dois cliques rápidos não
+    // passam juntos pelo "já faz 24h?" nem gastam a mesma carga duas vezes.
+    socket.on('caracol:roulette', (ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.roulette(socket, ack))); });
+    socket.on('caracol:boomerang', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.boomerang(socket, payload, ack))); });
     socket.on('caracol:visibility', (payload) => { void this.afterReady(() => this.setVisibility(socket, payload)); });
     socket.on('caracol:push-subscribe', (payload, ack) => { void this.afterReady(() => this.subscribePush(socket, payload, ack)); });
     socket.on('caracol:push-unsubscribe', (payload, ack) => { void this.afterReady(() => this.unsubscribePush(socket, payload, ack)); });
@@ -192,6 +226,8 @@ export class CaracolGameManager {
         cosmeticOwnedItemIds: [],
         cosmeticOutfit: emptyCaracolOutfit(),
         lastCoinAccruedAt: now,
+        lastRouletteAt: null,
+        lastRouletteItemId: null,
       });
       const runtime = this.addRuntimeAccount(account);
       await this.attachSocket(socket, runtime, now);
@@ -277,7 +313,12 @@ export class CaracolGameManager {
   private async selectCity(socket: CaracolSocket, payload: CaracolSelectCityInput, ack: (result: CaracolActionResult) => void): Promise<void> {
     const account = this.authenticatedAccount(socket, ack);
     if (!account) return;
-    if (account.alive && account.cityId) {
+    const moving = account.alive && account.cityId !== null;
+    // Quem se muda vivo continua ganhando moedas: liquida o pendente em vez de
+    // zerar o relógio de moedas, que é o que acontece ao voltar da morte.
+    if (moving) await this.settleCoins(account);
+    const mushroom = moving ? this.activeEffect(account.id, 'mushroom') : null;
+    if (moving && !mushroom) {
       ack(this.failure('CITY_LOCKED', 'Sua cidade fica travada enquanto você estiver vivo.'));
       return;
     }
@@ -286,13 +327,20 @@ export class CaracolGameManager {
       ack(this.failure('CITY_NOT_FOUND', 'Escolha uma cidade válida do mapa.'));
       return;
     }
-    account.alive = true;
+    const changes: CaracolCommit = { accounts: [account] };
+    if (mushroom) {
+      this.spendCharge(mushroom, changes);
+    } else {
+      account.alive = true;
+      account.lastCoinAccruedAt = this.clock();
+    }
     this.setAccountCity(account, city);
-    account.lastCoinAccruedAt = this.clock();
-    await this.store.saveAccount(account);
+    await this.store.commit(changes);
     await this.recordHistory({
       type: 'city',
-      message: `${account.nickname} escolheu ${city.name} (${city.uf}) para morar.`,
+      message: mushroom
+        ? `${account.nickname} usou o Cogumelo e se mudou para ${city.name} (${city.uf}).`
+        : `${account.nickname} escolheu ${city.name} (${city.uf}) para morar.`,
       actorNickname: account.nickname,
       targetNickname: null,
       amount: null,
@@ -311,26 +359,57 @@ export class CaracolGameManager {
       ack(this.failure('NEEDS_CITY', 'Escolha sua cidade antes de agir.'));
       return;
     }
+    if (this.rejectFrozen(account, ack)) return;
     await this.settleCoins(account);
-    const targetNickname = this.cleanNickname(payload?.targetNickname);
-    const target = Array.from(this.accounts.values()).find((candidate) => candidate.normalizedNickname === normalizeText(targetNickname) && candidate.alive && candidate.cityId && candidate.id !== account.id);
+    const target = this.livingOpponent(account, payload?.targetNickname);
     if (!target) {
       ack(this.failure('TARGET_NOT_FOUND', 'Esse nick não está vivo no mapa.'));
       return;
     }
-    const cost = this.redirectCost(account.speedDiscountLevel);
+    const now = this.clock();
+    if (this.activeEffect(target.id, 'star', now)) {
+      ack(this.failure('TARGET_PROTECTED', `${target.nickname} está com a Super Star. O caracol não consegue escolher essa pessoa.`));
+      return;
+    }
+    const locked = this.lockedTarget(now);
+    if (locked && locked.id !== target.id) {
+      ack(this.failure('TARGET_LOCKED', `O Casco vermelho de ${locked.nickname} prende o caracol. Ninguém tira o foco dele agora.`));
+      return;
+    }
+    const fireFlower = this.activeEffect(account.id, 'fire-flower', now);
+    const cost = fireFlower ? 0 : this.redirectCost(account);
     if (account.coins < cost) {
       ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${cost} moedas para redirecionar o caracol.`));
       return;
     }
+    const changes: CaracolCommit = { accounts: [account] };
     account.coins -= cost;
+    if (fireFlower) this.spendCharge(fireFlower, changes);
+    const shield = this.activeEffect(target.id, 'shield', now);
+    if (shield) {
+      await this.absorbAttack(account, target, shield, changes, {
+        type: 'redirect',
+        message: `${account.nickname} tentou mandar o caracol atrás de ${target.nickname}, mas bateu no Casco defensivo${cost > 0 ? ` e perdeu ${cost} moedas` : ''}.`,
+        actorNickname: account.nickname,
+        targetNickname: target.nickname,
+        amount: cost,
+        createdAt: now,
+      });
+      ack({ ok: true, state: this.stateFor(account) });
+      this.broadcastState();
+      return;
+    }
     this.world.targetAccountId = target.id;
-    this.world.redirectLevel += 1;
+    // A Flor de Fogo redireciona sem encarecer o próximo redirecionamento do mundo.
+    if (!fireFlower) this.world.redirectLevel += 1;
     this.approachingSent.clear();
-    await Promise.all([this.store.saveAccount(account), this.store.saveWorld(this.world)]);
+    changes.world = this.world;
+    await this.store.commit(changes);
     await this.recordHistory({
       type: 'redirect',
-      message: `${account.nickname} mandou o caracol atrás de ${target.nickname} por ${cost} moedas.`,
+      message: fireFlower
+        ? `${account.nickname} mandou o caracol atrás de ${target.nickname} com a Flor de Fogo, sem pagar nada.`
+        : `${account.nickname} mandou o caracol atrás de ${target.nickname} por ${cost} moedas.`,
       actorNickname: account.nickname,
       targetNickname: target.nickname,
       amount: cost,
@@ -349,9 +428,10 @@ export class CaracolGameManager {
       ack(this.failure('NEEDS_CITY', 'Escolha sua cidade antes de agir.'));
       return;
     }
+    if (this.rejectFrozen(account, ack)) return;
     await this.settleCoins(account);
     const nextLevel = this.world.speedLevel + 1;
-    const cost = this.speedCost(account.speedDiscountLevel);
+    const cost = this.speedCost(account);
     if (account.coins < cost) {
       ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${cost} moedas para levar o caracol a ${nextLevel * 100} km/h.`));
       return;
@@ -375,10 +455,11 @@ export class CaracolGameManager {
   private async buyDiscount(socket: CaracolSocket, ack: (result: CaracolActionResult) => void): Promise<void> {
     const account = this.authenticatedAccount(socket, ack);
     if (!account) return;
+    if (this.rejectFrozen(account, ack)) return;
     await this.settleCoins(account);
     const nextLevel = account.speedDiscountLevel + 1;
-    const cost = CARACOL_DISCOUNT_COSTS[nextLevel - 1];
-    if (cost === undefined) {
+    const cost = this.discountCost(account);
+    if (cost === null) {
       ack(this.failure('MAX_DISCOUNT', 'Seu desconto do caracol já está no máximo.'));
       return;
     }
@@ -411,6 +492,7 @@ export class CaracolGameManager {
   private async shopPurchase(socket: CaracolSocket, payload: CaracolShopPurchaseInput, ack: (result: CaracolActionResult) => void): Promise<void> {
     const account = this.authenticatedAccount(socket, ack);
     if (!account) return;
+    if (this.rejectFrozen(account, ack)) return;
     const wearer = this.validCosmeticWearer(payload?.wearer);
     const item = this.cosmeticItem(payload?.itemId);
     if (!wearer || !item) {
@@ -424,22 +506,23 @@ export class CaracolGameManager {
       ack(this.failure('COSMETIC_ALREADY_OWNED', 'Essa peça já está no guarda-roupa.'));
       return;
     }
-    if (account.coins < item.price) {
-      ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${item.price} moedas para comprar ${item.name}.`));
+    const price = this.shopPrice(account, item);
+    if (account.coins < price) {
+      ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${price} moedas para comprar ${item.name}.`));
       return;
     }
 
-    account.coins -= item.price;
+    account.coins -= price;
     ownedItemIds.push(item.id);
     if (wearer === 'player') account.cosmeticOutfit[item.slot] = item.id;
     else this.world.snailCosmeticOutfit[item.slot] = item.id;
     await this.store.saveCosmeticState(account, this.world, wearer);
     await this.recordHistory({
       type: 'shop',
-      message: `${account.nickname} comprou ${item.name} para ${wearer === 'player' ? 'si' : 'o caracol'} por ${item.price} moedas.`,
+      message: `${account.nickname} comprou ${item.name} para ${wearer === 'player' ? 'si' : 'o caracol'} por ${price} moedas.`,
       actorNickname: account.nickname,
       targetNickname: wearer === 'snail' ? 'Caracol' : null,
-      amount: item.price,
+      amount: price,
       createdAt: this.clock(),
     });
     this.ioNotice('shop', `${account.nickname} vestiu ${wearer === 'player' ? 'o próprio personagem' : 'o caracol'} com ${item.name}.`);
@@ -472,6 +555,245 @@ export class CaracolGameManager {
     await this.store.saveCosmeticState(account, this.world, wearer);
     ack({ ok: true, state: this.stateFor(account) });
     this.broadcastState();
+  }
+
+  private async roulette(socket: CaracolSocket, ack: (result: CaracolRouletteResult) => void): Promise<void> {
+    const account = this.authenticatedAccount(socket, ack);
+    if (!account) return;
+    if (!account.alive || !account.cityId) {
+      ack(this.failure('NEEDS_CITY', 'Escolha sua cidade antes de girar a roleta. Quem está morto não gira.'));
+      return;
+    }
+    const now = this.clock();
+    const availableAt = this.rouletteAvailableAt(account, now);
+    if (availableAt !== null) {
+      ack(this.failure('ROULETTE_COOLDOWN', `A roleta volta em ${this.formatEta(availableAt - now)}.`));
+      return;
+    }
+
+    let outcome: RouletteOutcome;
+    let item: CaracolRouletteItem;
+    try {
+      await this.settleCoins(account);
+      item = this.drawRouletteItem();
+      outcome = this.rouletteOutcome(account, item, now);
+      // A memória só muda depois que o banco confirmou: se a gravação falhar,
+      // o jogador não vê um item que sumiria no próximo reinício e o giro
+      // continua disponível.
+      const draft: CaracolAccountRecord = { ...account, lastRouletteAt: now, lastRouletteItemId: item.id };
+      outcome.apply(draft);
+      await this.store.commit({ accounts: [draft], upsertEffects: outcome.effect ? [outcome.effect] : [] });
+    } catch (error) {
+      console.error('[caracol] giro da roleta falhou', error);
+      ack(this.failure('ROULETTE_FAILED', 'Não consegui girar a roleta agora. Seu giro continua disponível.'));
+      return;
+    }
+
+    account.lastRouletteAt = now;
+    account.lastRouletteItemId = item.id;
+    outcome.apply(account);
+    if (outcome.effect) this.effects.set(outcome.effect.id, outcome.effect);
+
+    try {
+      await this.recordHistory({
+        type: 'roulette',
+        message: `${account.nickname} girou a roleta e tirou ${item.name}${outcome.detail}.`,
+        actorNickname: account.nickname,
+        targetNickname: null,
+        amount: outcome.amount,
+        createdAt: now,
+      });
+      // Super Star no alvo atual e Casco vermelho trocam o alvo antes do ack.
+      await this.ensureTarget();
+      await this.store.saveWorld(this.world);
+    } catch (error) {
+      console.error('[caracol] giro gravado, mas o pós-giro falhou', error);
+    }
+    this.ioNotice('roulette', `${account.nickname} girou a roleta e tirou ${item.name}.`);
+    ack({ ok: true, itemId: item.id, category: item.category, state: this.stateFor(account) });
+    this.broadcastState();
+  }
+
+  private async boomerang(socket: CaracolSocket, payload: CaracolBoomerangInput, ack: (result: CaracolActionResult) => void): Promise<void> {
+    const account = this.authenticatedAccount(socket, ack);
+    if (!account) return;
+    if (!account.alive || !account.cityId) {
+      ack(this.failure('NEEDS_CITY', 'Escolha sua cidade antes de agir.'));
+      return;
+    }
+    if (this.rejectFrozen(account, ack)) return;
+    const now = this.clock();
+    const charge = this.activeEffect(account.id, 'boomerang', now);
+    if (!charge) {
+      ack(this.failure('NO_CHARGE', 'Você não tem Bumerangue para lançar.'));
+      return;
+    }
+    const target = this.livingOpponent(account, payload?.targetNickname);
+    if (!target) {
+      ack(this.failure('TARGET_NOT_FOUND', 'Esse nick não está vivo no mapa.'));
+      return;
+    }
+    // Saldo só muda sobre número atualizado: paga o pendente dos dois antes.
+    await this.settleCoins(account);
+    await this.settleCoins(target);
+    const changes: CaracolCommit = { accounts: [account, target] };
+    this.spendCharge(charge, changes);
+    const shield = this.activeEffect(target.id, 'shield', now);
+    if (shield) {
+      await this.absorbAttack(account, target, shield, changes, {
+        type: 'roulette',
+        message: `${account.nickname} lançou o Bumerangue em ${target.nickname}, mas ele bateu no Casco defensivo.`,
+        actorNickname: account.nickname,
+        targetNickname: target.nickname,
+        amount: 0,
+        createdAt: now,
+      });
+      ack({ ok: true, state: this.stateFor(account) });
+      this.broadcastState();
+      return;
+    }
+    // floor(saldo × 0,2) em aritmética inteira, sem erro de ponto flutuante.
+    const amount = Math.floor(target.coins / BOOMERANG_SHARE_DIVISOR);
+    target.coins -= amount;
+    account.coins += amount;
+    await this.store.commit(changes);
+    await this.recordHistory({
+      type: 'roulette',
+      message: `${account.nickname} lançou o Bumerangue em ${target.nickname} e trouxe ${amount} moeda${amount === 1 ? '' : 's'}.`,
+      actorNickname: account.nickname,
+      targetNickname: target.nickname,
+      amount,
+      createdAt: now,
+    });
+    this.noticeAccount(target, 'roulette', `${account.nickname} acertou você com o Bumerangue e levou ${amount} moeda${amount === 1 ? '' : 's'}.`);
+    ack({ ok: true, state: this.stateFor(account) });
+    this.broadcastState();
+  }
+
+  /**
+   * O escudo absorve o ataque: o atacante já pagou (ou gastou a carga), o
+   * escudo se gasta e nada mais acontece. A resposta é sucesso porque a ação
+   * aconteceu e foi cobrada; o aviso `shield` conta aos dois o que houve.
+   */
+  private async absorbAttack(
+    attacker: RuntimeAccount,
+    target: RuntimeAccount,
+    shield: CaracolEffectRecord,
+    changes: CaracolCommit,
+    history: Omit<CaracolHistoryRecord, 'id'>,
+  ): Promise<void> {
+    this.spendCharge(shield, changes);
+    await this.store.commit(changes);
+    await this.recordHistory(history);
+    this.noticeAccount(attacker, 'shield', `${target.nickname} tinha um Casco defensivo. Seu ataque foi bloqueado.`);
+    this.noticeAccount(target, 'shield', `Seu Casco defensivo bloqueou um ataque de ${attacker.nickname}.`);
+  }
+
+  private drawRouletteItem(): CaracolRouletteItem {
+    // Dois passos: a categoria primeiro garante 50/50 com listas de tamanhos diferentes.
+    const category = this.random() < 0.5 ? 'buff' : 'debuff';
+    const pool = CARACOL_ROULETTE_CATALOG.filter((item) => item.category === category);
+    const index = Math.max(0, Math.min(pool.length - 1, Math.floor(this.random() * pool.length)));
+    return pool[index]!;
+  }
+
+  private rouletteOutcome(account: RuntimeAccount, item: CaracolRouletteItem, now: number): RouletteOutcome {
+    const effect: CaracolEffectRecord | null = item.durationMs === null ? null : {
+      id: caracolEffectId(item.scope, item.scope === 'world' ? null : account.id, item.id),
+      scope: item.scope,
+      accountId: item.scope === 'world' ? null : account.id,
+      itemId: item.id,
+      createdAt: now,
+      expiresAt: now + item.durationMs,
+      charges: item.charges,
+    };
+    if (item.id === 'bomb') {
+      const lost = account.coins - Math.floor(account.coins / 2);
+      return {
+        effect,
+        apply: (target) => { target.coins = Math.floor(target.coins / 2); },
+        detail: `: perdeu ${lost} moeda${lost === 1 ? '' : 's'}`,
+        amount: lost,
+      };
+    }
+    if (item.id === 'bullet-bill') {
+      const city = this.farthestCityFromSnail();
+      return {
+        effect,
+        apply: (target) => this.setAccountCity(target, city),
+        detail: ` e foi lançado para ${city.name} (${city.uf})`,
+        amount: null,
+      };
+    }
+    return { effect, apply: () => undefined, detail: '', amount: null };
+  }
+
+  /** A cidade do catálogo mais distante da posição atual do caracol; empate pelo menor código. */
+  private farthestCityFromSnail(): BrazilianCity {
+    const snail: GeoPoint = { lat: this.world.snailLat, lon: this.world.snailLon };
+    let farthest: BrazilianCity | null = null;
+    let farthestKm = -1;
+    for (const city of cityById.values()) {
+      const km = distanceKm(snail, city);
+      if (km > farthestKm || (km === farthestKm && farthest && Number(city.id) < Number(farthest.id))) {
+        farthest = city;
+        farthestKm = km;
+      }
+    }
+    return farthest!;
+  }
+
+  private rouletteAvailableAt(account: CaracolAccountRecord, now: number): number | null {
+    if (account.lastRouletteAt === null) return null;
+    const availableAt = account.lastRouletteAt + CARACOL_ROULETTE_COOLDOWN_MS;
+    return now < availableAt ? availableAt : null;
+  }
+
+  /** Efeito vigente pelo relógio: vencido conta como inexistente mesmo antes do tick removê-lo. */
+  private activeEffect(accountId: string | null, itemId: CaracolRouletteItemId, now = this.clock()): CaracolEffectRecord | null {
+    const scope = caracolRouletteItemById.get(itemId)?.scope ?? 'account';
+    const effect = this.effects.get(caracolEffectId(scope, scope === 'world' ? null : accountId, itemId));
+    if (!effect || now >= effect.expiresAt) return null;
+    if (effect.charges !== null && effect.charges <= 0) return null;
+    return effect;
+  }
+
+  private activeEffectsOf(accountId: string | null, now: number): CaracolEffectRecord[] {
+    const scope = accountId === null ? 'world' : 'account';
+    return CARACOL_ROULETTE_CATALOG
+      .filter((item) => item.scope === scope)
+      .map((item) => this.activeEffect(accountId, item.id, now))
+      .filter((effect): effect is CaracolEffectRecord => effect !== null);
+  }
+
+  private effectView(effect: CaracolEffectRecord): CaracolEffectView {
+    return { itemId: effect.itemId, expiresAt: effect.expiresAt, charges: effect.charges };
+  }
+
+  /** Gasta uma carga na memória e anota a gravação; a última carga remove o efeito. */
+  private spendCharge(effect: CaracolEffectRecord, changes: CaracolCommit): void {
+    const remaining = (effect.charges ?? 1) - 1;
+    if (remaining <= 0) {
+      this.effects.delete(effect.id);
+      changes.deleteEffectIds = [...(changes.deleteEffectIds ?? []), effect.id];
+      return;
+    }
+    effect.charges = remaining;
+    changes.upsertEffects = [...(changes.upsertEffects ?? []), { ...effect }];
+  }
+
+  /** O Congelamento trava tudo que gasta ou ataca; vestir e escolher cidade seguem livres. */
+  private rejectFrozen(account: RuntimeAccount, ack: (result: CaracolActionFailure) => void): boolean {
+    const now = this.clock();
+    const freeze = this.activeEffect(account.id, 'freeze', now);
+    if (!freeze) return false;
+    ack(this.failure('FROZEN', `Você está congelado por mais ${this.formatEta(freeze.expiresAt - now)}. Nada de comprar, acelerar, redirecionar ou lançar bumerangue.`));
+    return true;
+  }
+
+  private livingOpponent(account: RuntimeAccount, nickname: unknown): RuntimeAccount | undefined {
+    const normalized = normalizeText(this.cleanNickname(nickname));
+    return Array.from(this.accounts.values()).find((candidate) => candidate.normalizedNickname === normalized && candidate.alive && candidate.cityId && candidate.id !== account.id);
   }
 
   private async setVisibility(socket: CaracolSocket, payload: CaracolVisibilityInput): Promise<void> {
@@ -566,7 +888,7 @@ export class CaracolGameManager {
     if (persist && gainedIntervals) await this.store.saveAccount(account);
   }
 
-  private authenticatedAccount(socket: CaracolSocket, ack?: (result: CaracolActionResult) => void): RuntimeAccount | null {
+  private authenticatedAccount(socket: CaracolSocket, ack?: (result: CaracolActionFailure) => void): RuntimeAccount | null {
     const accountId = socket.data.caracolAccountId;
     const account = accountId ? this.accounts.get(accountId) : undefined;
     if (account) return account;
@@ -590,7 +912,7 @@ export class CaracolGameManager {
     return null;
   }
 
-  private setAccountCity(account: RuntimeAccount, city: BrazilianCity): void {
+  private setAccountCity(account: CaracolAccountRecord, city: BrazilianCity): void {
     account.cityId = city.id;
     account.cityName = city.name;
     account.cityUf = city.uf;
@@ -615,45 +937,110 @@ export class CaracolGameManager {
     return { id: account.cityId, name: account.cityName, uf: account.cityUf, lat: account.cityLat, lon: account.cityLon };
   }
 
+  /** Velocidade global exibida; nenhum efeito mexe nela. */
   private speedKmh(): number {
     return this.world.speedLevel === 0 ? CARACOL_BASE_SPEED_KMH : this.world.speedLevel * 100;
   }
 
-  private discountedCost(baseCost: number, discountLevel: number, minimum: number): number {
-    return Math.max(minimum, Math.floor(baseCost * 0.75 ** discountLevel));
+  /** Velocidade real da perseguição: a Banana acelera só contra o próprio dono. */
+  private chaseSpeedKmh(target: RuntimeAccount | undefined, now = this.clock()): number {
+    return this.speedKmh() * (target && this.activeEffect(target.id, 'banana', now) ? BANANA_SPEED_FACTOR : 1);
   }
 
-  private redirectCost(discountLevel: number): number {
-    return this.discountedCost(CARACOL_REDIRECT_COST * 2 ** this.world.redirectLevel, discountLevel, 4);
+  /**
+   * Fórmula única de preço: max(piso, floor(base × 0,75^desconto × fatores)).
+   * A tela e a cobrança leem daqui, então nunca discordam. O desconto pessoal
+   * só entra onde já entrava (redirect e aceleração); Moeda e Raio entram em tudo.
+   */
+  private price(account: CaracolAccountRecord, baseCost: number, minimum: number, withDiscount: boolean): number {
+    const now = this.clock();
+    const factor = (this.activeEffect(account.id, 'coin', now) ? 0.5 : 1) * (this.activeEffect(null, 'lightning', now) ? 2 : 1);
+    const discount = withDiscount ? 0.75 ** account.speedDiscountLevel : 1;
+    return Math.max(minimum, Math.floor(baseCost * discount * factor));
   }
 
-  private speedCost(discountLevel: number): number {
-    return this.discountedCost(50 * (this.world.speedLevel + 1) ** 2, discountLevel, 1);
+  private redirectCost(account: CaracolAccountRecord): number {
+    return this.price(account, CARACOL_REDIRECT_COST * 2 ** this.world.redirectLevel, 4, true);
+  }
+
+  private speedCost(account: CaracolAccountRecord): number {
+    return this.price(account, 50 * (this.world.speedLevel + 1) ** 2, 1, true);
+  }
+
+  private discountCost(account: CaracolAccountRecord): number | null {
+    const baseCost = CARACOL_DISCOUNT_COSTS[account.speedDiscountLevel];
+    return baseCost === undefined ? null : this.price(account, baseCost, 1, false);
+  }
+
+  private shopPrice(account: CaracolAccountRecord, item: CaracolCosmeticItem): number {
+    return this.price(account, item.price, 1, false);
+  }
+
+  /** Pode ser perseguido: vivo, com cidade e sem Super Star. */
+  private isChaseable(account: RuntimeAccount | undefined, now: number): account is RuntimeAccount {
+    return Boolean(account?.alive && account.cityId && account.cityLat !== null && account.cityLon !== null && !this.activeEffect(account.id, 'star', now));
+  }
+
+  /**
+   * Casco vermelho vigente: a trava mais nova de alguém que ainda pode ser
+   * perseguido. A Star do dono vence a trava, e dono morto não trava nada.
+   */
+  private lockedTarget(now: number): RuntimeAccount | null {
+    let locked: { account: RuntimeAccount; createdAt: number } | null = null;
+    for (const effect of this.effects.values()) {
+      if (effect.itemId !== 'red-shell' || !effect.accountId || now >= effect.expiresAt) continue;
+      const owner = this.accounts.get(effect.accountId);
+      if (!this.isChaseable(owner, now)) continue;
+      if (!locked || effect.createdAt > locked.createdAt) locked = { account: owner, createdAt: effect.createdAt };
+    }
+    return locked?.account ?? null;
   }
 
   private async ensureTarget(): Promise<boolean> {
+    const now = this.clock();
     const current = this.world.targetAccountId ? this.accounts.get(this.world.targetAccountId) : undefined;
-    if (current?.alive && current.cityId) return false;
-    const snail: GeoPoint = { lat: this.world.snailLat, lon: this.world.snailLon };
-    const candidates = Array.from(this.accounts.values()).filter((account) => account.alive && account.cityId && account.cityLat !== null && account.cityLon !== null);
-    const next = candidates.sort((a, b) => distanceKm(snail, { lat: a.cityLat!, lon: a.cityLon! }) - distanceKm(snail, { lat: b.cityLat!, lon: b.cityLon! }))[0];
+    const locked = this.lockedTarget(now);
+    let next: RuntimeAccount | undefined = locked ?? (this.isChaseable(current, now) ? current : undefined);
+    if (!next) {
+      const snail: GeoPoint = { lat: this.world.snailLat, lon: this.world.snailLon };
+      const candidates = Array.from(this.accounts.values()).filter((account) => this.isChaseable(account, now));
+      next = candidates.sort((a, b) => distanceKm(snail, { lat: a.cityLat!, lon: a.cityLon! }) - distanceKm(snail, { lat: b.cityLat!, lon: b.cityLon! }))[0];
+    }
     const changed = this.world.targetAccountId !== (next?.id ?? null);
     this.world.targetAccountId = next?.id ?? null;
     if (changed) {
       this.approachingSent.clear();
       if (next) {
+        const byLock = next === locked;
         await this.recordHistory({
           type: 'target',
-          message: `O caracol escolheu ${next.nickname} como novo alvo.`,
+          message: byLock ? `O Casco vermelho puxou o caracol para ${next.nickname}.` : `O caracol escolheu ${next.nickname} como novo alvo.`,
           actorNickname: null,
           targetNickname: next.nickname,
           amount: null,
-          createdAt: this.clock(),
+          createdAt: now,
         });
-        await this.notify(next, 'targeted', `O caracol despertou e está indo atrás de você.`);
+        await this.notify(next, 'targeted', byLock ? 'O Casco vermelho te marcou: o caracol está indo atrás de você.' : `O caracol despertou e está indo atrás de você.`);
       }
     }
     return changed;
+  }
+
+  /** Remove do banco e da memória o que venceu e avisa o dono. Nenhum timer desliga efeito. */
+  private async expireEffects(now: number): Promise<void> {
+    const expired = Array.from(this.effects.values()).filter((effect) => now >= effect.expiresAt);
+    if (expired.length === 0) return;
+    await this.store.commit({ deleteEffectIds: expired.map((effect) => effect.id) });
+    for (const effect of expired) {
+      this.effects.delete(effect.id);
+      const itemName = caracolRouletteItemById.get(effect.itemId)?.name ?? 'O efeito';
+      if (effect.scope === 'world') {
+        this.ioNotice('effect-expired', `${itemName} acabou. Os preços voltaram ao normal.`);
+        continue;
+      }
+      const owner = effect.accountId ? this.accounts.get(effect.accountId) : undefined;
+      if (owner) this.noticeAccount(owner, 'effect-expired', `${itemName} acabou.`);
+    }
   }
 
   private async runTick(): Promise<void> {
@@ -672,6 +1059,7 @@ export class CaracolGameManager {
   private async tickInternal(now: number, broadcast: boolean): Promise<void> {
     const elapsedMs = Math.max(0, now - this.world.lastTickAt);
     this.world.lastTickAt = now;
+    await this.expireEffects(now);
     for (const account of this.accounts.values()) {
       if (account.sockets.size === 0) continue;
       const gainedIntervals = this.accrueCoins(account, now, true);
@@ -682,11 +1070,11 @@ export class CaracolGameManager {
 
     await this.ensureTarget();
     const target = this.world.targetAccountId ? this.accounts.get(this.world.targetAccountId) : undefined;
-    if (target?.alive && target.cityLat !== null && target.cityLon !== null && elapsedMs > 0) {
+    if (this.isChaseable(target, now) && elapsedMs > 0) {
       const from: GeoPoint = { lat: this.world.snailLat, lon: this.world.snailLon };
-      const to: GeoPoint = { lat: target.cityLat, lon: target.cityLon };
+      const to: GeoPoint = { lat: target.cityLat!, lon: target.cityLon! };
       const remainingKm = distanceKm(from, to);
-      const travelKm = this.speedKmh() * elapsedMs / 3_600_000;
+      const travelKm = this.chaseSpeedKmh(target, now) * elapsedMs / 3_600_000;
       if (remainingKm <= travelKm || remainingKm <= 0.001) {
         this.world.snailLat = to.lat;
         this.world.snailLon = to.lon;
@@ -734,7 +1122,7 @@ export class CaracolGameManager {
   private async maybeApproachPush(): Promise<void> {
     const target = this.world.targetAccountId ? this.accounts.get(this.world.targetAccountId) : undefined;
     if (!target?.alive || target.cityLat === null || target.cityLon === null) return;
-    const speed = this.speedKmh();
+    const speed = this.chaseSpeedKmh(target);
     const distance = distanceKm({ lat: this.world.snailLat, lon: this.world.snailLon }, { lat: target.cityLat, lon: target.cityLon });
     const etaMs = distance / speed * 3_600_000;
     if (etaMs <= APPROACHING_ETA_MS && !this.approachingSent.has(target.id)) {
@@ -747,7 +1135,10 @@ export class CaracolGameManager {
         amount: null,
         createdAt: this.clock(),
       });
-      await this.notify(target, 'approaching', `O caracol está a caminho e chega em aproximadamente ${this.formatEta(etaMs)}.`);
+      // O aviso não pode entregar a chegada a quem está com Blooper.
+      await this.notify(target, 'approaching', this.activeEffect(target.id, 'blooper')
+        ? 'O caracol está chegando perto de você.'
+        : `O caracol está a caminho e chega em aproximadamente ${this.formatEta(etaMs)}.`);
     }
   }
 
@@ -764,10 +1155,15 @@ export class CaracolGameManager {
     });
   }
 
-  private ioNotice(code: 'speed' | 'redirected' | 'discount' | 'death' | 'shop', message: string): void {
+  private ioNotice(code: CaracolNoticePayload['code'], message: string): void {
     for (const socket of this.sockets.values()) {
       if (socket.data.caracolAccountId) socket.emit('caracol:notice', { code, message });
     }
+  }
+
+  /** Aviso só na tela do dono, sem Push: a roleta não notifica fora do jogo. */
+  private noticeAccount(account: RuntimeAccount, code: CaracolNoticePayload['code'], message: string): void {
+    for (const socketId of account.sockets) this.sockets.get(socketId)?.emit('caracol:notice', { code, message });
   }
 
   private async removePushSubscription(endpoint: string): Promise<void> {
@@ -784,27 +1180,31 @@ export class CaracolGameManager {
   }
 
   private stateFor(account: RuntimeAccount): CaracolStateView {
+    const now = this.clock();
     const target = this.world.targetAccountId ? this.accounts.get(this.world.targetAccountId) : undefined;
     const distance = target?.cityLat !== null && target?.cityLat !== undefined && target?.cityLon !== null && target?.cityLon !== undefined
       ? distanceKm({ lat: this.world.snailLat, lon: this.world.snailLon }, { lat: target.cityLat, lon: target.cityLon })
       : null;
-    const speed = this.speedKmh();
+    // Blooper esconde no servidor: a posição nunca sai daqui para quem tem tinta.
+    const hidden = this.activeEffect(account.id, 'blooper', now) !== null;
     return {
       world: {
         snail: {
-          lat: this.world.snailLat,
-          lon: this.world.snailLon,
-          speedKmh: speed,
+          lat: hidden ? null : this.world.snailLat,
+          lon: hidden ? null : this.world.snailLon,
+          hidden,
+          speedKmh: this.speedKmh(),
           speedLevel: this.world.speedLevel,
-          speedCost: this.speedCost(account.speedDiscountLevel),
+          speedCost: this.speedCost(account),
           targetAccountId: target?.id ?? null,
           targetNickname: target?.nickname ?? null,
-          distanceKm: distance,
-          etaMs: distance === null ? null : distance / speed * 3_600_000,
-          redirectCost: this.redirectCost(account.speedDiscountLevel),
+          distanceKm: hidden ? null : distance,
+          etaMs: hidden || distance === null ? null : distance / this.chaseSpeedKmh(target, now) * 3_600_000,
+          redirectCost: this.redirectCost(account),
           outfit: { ...this.world.snailCosmeticOutfit },
         },
-        serverNow: this.clock(),
+        effects: this.activeEffectsOf(null, now).map((effect) => this.effectView(effect)),
+        serverNow: now,
       },
       players: Array.from(this.accounts.values())
         .filter((candidate) => this.cityFor(candidate) !== null)
@@ -817,6 +1217,7 @@ export class CaracolGameManager {
           online: candidate.sockets.size > 0,
           isYou: candidate.id === account.id,
           outfit: { ...candidate.cosmeticOutfit },
+          effectItemIds: this.activeEffectsOf(candidate.id, now).map((effect) => effect.itemId),
         })),
       you: {
         accountId: account.id,
@@ -825,9 +1226,16 @@ export class CaracolGameManager {
         coins: account.coins,
         city: this.cityFor(account),
         speedDiscountLevel: account.speedDiscountLevel,
+        discountCost: this.discountCost(account),
+        roulette: {
+          availableAt: this.rouletteAvailableAt(account, now),
+          lastItemId: account.lastRouletteItemId,
+        },
+        effects: this.activeEffectsOf(account.id, now).map((effect) => this.effectView(effect)),
       },
       shop: {
-        catalog: CARACOL_COSMETIC_CATALOG.map((item) => ({ ...item })),
+        // O preço da loja já vem com Moeda e Raio: o botão mostra o que será cobrado.
+        catalog: CARACOL_COSMETIC_CATALOG.map((item) => ({ ...item, price: this.shopPrice(account, item) })),
         player: {
           ownedItemIds: [...account.cosmeticOwnedItemIds],
           outfit: { ...account.cosmeticOutfit },

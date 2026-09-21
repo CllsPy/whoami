@@ -1,5 +1,6 @@
 import type {
   CaracolActionResult,
+  CaracolBoomerangInput,
   CaracolDeathPayload,
   CaracolHistoryInput,
   CaracolHistoryResult,
@@ -9,6 +10,7 @@ import type {
   CaracolRedirectInput,
   CaracolRegisterInput,
   CaracolResumeInput,
+  CaracolRouletteResult,
   CaracolSelectCityInput,
   CaracolShopEquipInput,
   CaracolShopPurchaseInput,
@@ -282,6 +284,8 @@ export interface ClientToServerEvents {
   'caracol:buy-discount': (ack: (result: CaracolActionResult) => void) => void;
   'caracol:shop-purchase': (payload: CaracolShopPurchaseInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:shop-equip': (payload: CaracolShopEquipInput, ack: (result: CaracolActionResult) => void) => void;
+  'caracol:roulette': (ack: (result: CaracolRouletteResult) => void) => void;
+  'caracol:boomerang': (payload: CaracolBoomerangInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:visibility': (payload: CaracolVisibilityInput) => void;
   'caracol:push-subscribe': (payload: CaracolPushSubscriptionInput, ack: (result: CaracolActionResult) => void) => void;
   'caracol:push-unsubscribe': (payload: { endpoint: string }, ack: (result: CaracolActionResult) => void) => void;

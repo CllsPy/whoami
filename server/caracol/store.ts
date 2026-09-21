@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolConfig } from 'pg';
 import {
+  caracolRouletteItemById,
   emptyCaracolOutfit,
+  type CaracolEffectScope,
   type CaracolHistoryEntry,
   type CaracolHistoryType,
   type CaracolCosmeticWearer,
   type CaracolOutfit,
+  type CaracolRouletteItemId,
 } from '../../shared/caracol';
 import {
   CARACOL_BASE_SPEED_KMH,
@@ -29,6 +32,8 @@ export interface CaracolAccountRecord {
   cosmeticOwnedItemIds: string[];
   cosmeticOutfit: CaracolOutfit;
   lastCoinAccruedAt: number;
+  lastRouletteAt: number | null;
+  lastRouletteItemId: CaracolRouletteItemId | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -46,6 +51,33 @@ export interface CaracolWorldRecord {
 
 export type CaracolHistoryRecord = CaracolHistoryEntry;
 
+/**
+ * Efeito da roleta que está valendo. Vence por conta (`expiresAt` comparado ao
+ * relógio), nunca por timer. O `id` é derivado do dono e do item, então o mesmo
+ * item de novo para o mesmo dono renova em vez de somar.
+ */
+export interface CaracolEffectRecord {
+  id: string;
+  scope: CaracolEffectScope;
+  accountId: string | null;
+  itemId: CaracolRouletteItemId;
+  createdAt: number;
+  expiresAt: number;
+  charges: number | null;
+}
+
+/** Mudanças gravadas juntas: ou todas entram no banco, ou nenhuma. */
+export interface CaracolCommit {
+  accounts?: CaracolAccountRecord[];
+  world?: CaracolWorldRecord;
+  upsertEffects?: CaracolEffectRecord[];
+  deleteEffectIds?: string[];
+}
+
+export function caracolEffectId(scope: CaracolEffectScope, accountId: string | null, itemId: CaracolRouletteItemId): string {
+  return `${scope}:${accountId ?? 'world'}:${itemId}`;
+}
+
 export interface CaracolPushRecord {
   accountId: string;
   endpoint: string;
@@ -59,6 +91,7 @@ export interface CaracolSnapshot {
   accounts: CaracolAccountRecord[];
   world: CaracolWorldRecord;
   pushSubscriptions: CaracolPushRecord[];
+  effects: CaracolEffectRecord[];
 }
 
 export class CaracolNicknameTakenError extends Error {
@@ -75,6 +108,7 @@ export interface CaracolStore {
   saveAccount(account: CaracolAccountRecord): Promise<void>;
   saveWorld(world: CaracolWorldRecord): Promise<void>;
   saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void>;
+  commit(changes: CaracolCommit): Promise<void>;
   appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord>;
   listHistory(input: { beforeId?: string | null; limit: number }): Promise<{
     entries: CaracolHistoryRecord[];
@@ -111,6 +145,14 @@ function cloneWorld(world: CaracolWorldRecord): CaracolWorldRecord {
 
 function clonePush(subscription: CaracolPushRecord): CaracolPushRecord {
   return { ...subscription };
+}
+
+function cloneEffect(effect: CaracolEffectRecord): CaracolEffectRecord {
+  return { ...effect };
+}
+
+function rouletteItemIdFromValue(value: unknown): CaracolRouletteItemId | null {
+  return typeof value === 'string' && caracolRouletteItemById.has(value as CaracolRouletteItemId) ? value as CaracolRouletteItemId : null;
 }
 
 const schemaSql = `
@@ -179,6 +221,22 @@ CREATE TABLE IF NOT EXISTS caracol_history (
 
 CREATE INDEX IF NOT EXISTS caracol_history_created_idx
   ON caracol_history (id DESC);
+
+CREATE TABLE IF NOT EXISTS caracol_effects (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope IN ('account', 'world')),
+  account_id TEXT REFERENCES caracol_accounts(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  charges INTEGER,
+  CONSTRAINT caracol_effects_owner CHECK ((scope = 'world') = (account_id IS NULL))
+);
+
+-- UNIQUE (scope, account_id, item_id). O COALESCE existe porque no PostgreSQL
+-- dois NULL nunca colidem, e o Raio (escopo mundo) não tem dono.
+CREATE UNIQUE INDEX IF NOT EXISTS caracol_effects_owner_item_idx
+  ON caracol_effects (scope, (COALESCE(account_id, '')), item_id);
 `;
 
 function accountFromRow(row: Record<string, unknown>): CaracolAccountRecord {
@@ -198,6 +256,8 @@ function accountFromRow(row: Record<string, unknown>): CaracolAccountRecord {
     cosmeticOwnedItemIds: Array.isArray(row.cosmetic_owned_item_ids) ? row.cosmetic_owned_item_ids.map(String) : [],
     cosmeticOutfit: outfitFromValue(row.cosmetic_outfit),
     lastCoinAccruedAt: new Date(String(row.last_coin_accrued_at)).getTime(),
+    lastRouletteAt: row.last_roulette_at == null ? null : new Date(String(row.last_roulette_at)).getTime(),
+    lastRouletteItemId: rouletteItemIdFromValue(row.last_roulette_item_id),
     createdAt: new Date(String(row.created_at)).getTime(),
     updatedAt: new Date(String(row.updated_at)).getTime(),
   };
@@ -238,6 +298,21 @@ function historyFromRow(row: Record<string, unknown>): CaracolHistoryRecord {
   };
 }
 
+function effectFromRow(row: Record<string, unknown>): CaracolEffectRecord | null {
+  const itemId = rouletteItemIdFromValue(row.item_id);
+  // Um item que saiu do catálogo deixa a linha órfã; ela é ignorada até vencer.
+  if (!itemId) return null;
+  return {
+    id: String(row.id),
+    scope: row.scope === 'world' ? 'world' : 'account',
+    accountId: row.account_id === null ? null : String(row.account_id),
+    itemId,
+    createdAt: new Date(String(row.created_at)).getTime(),
+    expiresAt: new Date(String(row.expires_at)).getTime(),
+    charges: row.charges === null ? null : Number(row.charges),
+  };
+}
+
 function pushFromRow(row: Record<string, unknown>): CaracolPushRecord {
   return {
     accountId: String(row.account_id),
@@ -252,6 +327,7 @@ function pushFromRow(row: Record<string, unknown>): CaracolPushRecord {
 export class MemoryCaracolStore implements CaracolStore {
   private readonly accounts = new Map<string, CaracolAccountRecord>();
   private readonly pushes = new Map<string, CaracolPushRecord>();
+  private readonly effects = new Map<string, CaracolEffectRecord>();
   private readonly history: CaracolHistoryRecord[] = [];
   private nextHistoryId = 1;
   private world: CaracolWorldRecord = initialWorld();
@@ -266,6 +342,7 @@ export class MemoryCaracolStore implements CaracolStore {
       accounts: Array.from(this.accounts.values(), cloneAccount),
       world: cloneWorld(this.world),
       pushSubscriptions: Array.from(this.pushes.values(), clonePush),
+      effects: Array.from(this.effects.values(), cloneEffect),
     };
   }
 
@@ -291,6 +368,13 @@ export class MemoryCaracolStore implements CaracolStore {
   async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
     await this.saveAccount(account);
     if (wearer === 'snail') this.world = cloneWorld(world);
+  }
+
+  async commit(changes: CaracolCommit): Promise<void> {
+    for (const account of changes.accounts ?? []) await this.saveAccount(account);
+    if (changes.world) await this.saveWorld(changes.world);
+    for (const effect of changes.upsertEffects ?? []) this.effects.set(effect.id, cloneEffect(effect));
+    for (const effectId of changes.deleteEffectIds ?? []) this.effects.delete(effectId);
   }
 
   async appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord> {
@@ -342,6 +426,10 @@ export class PgCaracolStore implements CaracolStore {
     await this.pool.query("ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS snail_cosmetic_owned_item_ids TEXT[] NOT NULL DEFAULT '{}' ");
     await this.pool.query("ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS snail_cosmetic_outfit JSONB NOT NULL DEFAULT '{}'::JSONB");
     await this.pool.query('ALTER TABLE caracol_world ADD COLUMN IF NOT EXISTS redirect_level INTEGER NOT NULL DEFAULT 0');
+    // CREATE TABLE IF NOT EXISTS não mexe em caracol_accounts que já existe em
+    // produção; sem estes ALTER a coluna nova nunca apareceria.
+    await this.pool.query('ALTER TABLE caracol_accounts ADD COLUMN IF NOT EXISTS last_roulette_at TIMESTAMPTZ');
+    await this.pool.query('ALTER TABLE caracol_accounts ADD COLUMN IF NOT EXISTS last_roulette_item_id TEXT');
     await this.pool.query(
       `INSERT INTO caracol_world (id, snail_lat, snail_lon, speed_level, redirect_level, last_tick_at)
        VALUES ($1, $2, $3, $4, $5, NOW())
@@ -351,16 +439,20 @@ export class PgCaracolStore implements CaracolStore {
   }
 
   async loadSnapshot(): Promise<CaracolSnapshot> {
-    const [accounts, world, pushes] = await Promise.all([
+    const [accounts, world, pushes, effects] = await Promise.all([
       this.pool.query('SELECT * FROM caracol_accounts ORDER BY nickname'),
       this.pool.query('SELECT * FROM caracol_world WHERE id = $1', [WORLD_ID]),
       this.pool.query('SELECT * FROM caracol_push_subscriptions'),
+      this.pool.query('SELECT * FROM caracol_effects'),
     ]);
     const worldRow = world.rows[0] as Record<string, unknown> | undefined;
     return {
       accounts: accounts.rows.map((row) => accountFromRow(row as Record<string, unknown>)),
       world: worldRow ? worldFromRow(worldRow) : initialWorld(),
       pushSubscriptions: pushes.rows.map((row) => pushFromRow(row as Record<string, unknown>)),
+      effects: effects.rows
+        .map((row) => effectFromRow(row as Record<string, unknown>))
+        .filter((effect): effect is CaracolEffectRecord => effect !== null),
     };
   }
 
@@ -390,19 +482,56 @@ export class PgCaracolStore implements CaracolStore {
   }
 
   async saveAccount(account: CaracolAccountRecord): Promise<void> {
-    await this.pool.query(
+    await this.writeAccount(this.pool, account);
+  }
+
+  async saveWorld(world: CaracolWorldRecord): Promise<void> {
+    await this.writeWorld(this.pool, world);
+  }
+
+  async commit(changes: CaracolCommit): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const account of changes.accounts ?? []) await this.writeAccount(client, account);
+      if (changes.world) await this.writeWorld(client, changes.world);
+      for (const effect of changes.upsertEffects ?? []) {
+        await client.query(
+          `INSERT INTO caracol_effects (id, scope, account_id, item_id, created_at, expires_at, charges)
+           VALUES ($1, $2, $3, $4, TO_TIMESTAMP($5 / 1000.0), TO_TIMESTAMP($6 / 1000.0), $7)
+           ON CONFLICT (id) DO UPDATE SET created_at = EXCLUDED.created_at,
+             expires_at = EXCLUDED.expires_at, charges = EXCLUDED.charges`,
+          [effect.id, effect.scope, effect.accountId, effect.itemId, effect.createdAt, effect.expiresAt, effect.charges],
+        );
+      }
+      if (changes.deleteEffectIds?.length) {
+        await client.query('DELETE FROM caracol_effects WHERE id = ANY($1::TEXT[])', [changes.deleteEffectIds]);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async writeAccount(db: Pick<Pool, 'query'>, account: CaracolAccountRecord): Promise<void> {
+    await db.query(
       `UPDATE caracol_accounts SET
         coins = $2, alive = $3, city_id = $4, city_name = $5, city_uf = $6,
         city_lat = $7, city_lon = $8, speed_discount_level = $9,
         cosmetic_owned_item_ids = $10, cosmetic_outfit = $11,
-        last_coin_accrued_at = TO_TIMESTAMP($12 / 1000.0), updated_at = NOW()
+        last_coin_accrued_at = TO_TIMESTAMP($12 / 1000.0),
+        last_roulette_at = CASE WHEN $13::DOUBLE PRECISION IS NULL THEN NULL ELSE TO_TIMESTAMP($13::DOUBLE PRECISION / 1000.0) END,
+        last_roulette_item_id = $14, updated_at = NOW()
        WHERE id = $1`,
-      [account.id, account.coins, account.alive, account.cityId, account.cityName, account.cityUf, account.cityLat, account.cityLon, account.speedDiscountLevel, account.cosmeticOwnedItemIds, JSON.stringify(account.cosmeticOutfit), account.lastCoinAccruedAt],
+      [account.id, account.coins, account.alive, account.cityId, account.cityName, account.cityUf, account.cityLat, account.cityLon, account.speedDiscountLevel, account.cosmeticOwnedItemIds, JSON.stringify(account.cosmeticOutfit), account.lastCoinAccruedAt, account.lastRouletteAt, account.lastRouletteItemId],
     );
   }
 
-  async saveWorld(world: CaracolWorldRecord): Promise<void> {
-    await this.pool.query(
+  private async writeWorld(db: Pick<Pool, 'query'>, world: CaracolWorldRecord): Promise<void> {
+    await db.query(
       `UPDATE caracol_world SET snail_lat = $2, snail_lon = $3, speed_level = $4,
         redirect_level = $5, target_account_id = $6, snail_cosmetic_owned_item_ids = $7,
         snail_cosmetic_outfit = $8, last_tick_at = TO_TIMESTAMP($9 / 1000.0), updated_at = NOW()
