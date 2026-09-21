@@ -46,6 +46,81 @@ export const CARACOL_COSMETIC_CATALOG: readonly CaracolCosmeticItem[] = [
   { id: 'cap-bucket', slot: 'cap', name: 'Bucket', price: 100, tier: 3 },
 ];
 
+export const CARACOL_ROULETTE_COOLDOWN_MS = 24 * 60 * 60 * 1_000;
+
+export type CaracolRouletteCategory = 'buff' | 'debuff';
+export type CaracolEffectScope = 'account' | 'world';
+export type CaracolRouletteItemId =
+  | 'mushroom'
+  | 'star'
+  | 'fire-flower'
+  | 'boomerang'
+  | 'bullet-bill'
+  | 'coin'
+  | 'shield'
+  | 'red-shell'
+  | 'bomb'
+  | 'lightning'
+  | 'blooper'
+  | 'freeze'
+  | 'banana';
+
+/**
+ * Todo item mexe em saldo (só na hora), custos, alvo, velocidade ou
+ * informação. Nenhum item muda a taxa de ganho de moedas por tempo: o
+ * pagamento é preguiçoso e em lote, e um multiplicador por período pagaria
+ * errado em silêncio. Leia plano/roleta-do-caracol.md, seção 5, antes de
+ * adicionar um item aqui.
+ */
+export interface CaracolRouletteItem {
+  id: CaracolRouletteItemId;
+  category: CaracolRouletteCategory;
+  scope: CaracolEffectScope;
+  name: string;
+  shortName: string;
+  summary: string;
+  description: string;
+  /** Validade do efeito; `null` para item instantâneo, que não é gravado. */
+  durationMs: number | null;
+  /** Cargas do efeito; `null` para efeito que vale só por tempo. */
+  charges: number | null;
+  durationLabel: string;
+}
+
+const HOUR_MS = 60 * 60 * 1_000;
+
+export const CARACOL_ROULETTE_CATALOG: readonly CaracolRouletteItem[] = [
+  { id: 'mushroom', category: 'buff', scope: 'account', name: 'Cogumelo', shortName: 'Cogumelo', summary: 'Troca de cidade mesmo vivo.', description: 'Você pode mudar de cidade mesmo estando vivo. A carga é gasta quando você escolhe a cidade nova.', durationMs: 24 * HOUR_MS, charges: 1, durationLabel: '1 uso, até 24 horas' },
+  { id: 'star', category: 'buff', scope: 'account', name: 'Super Star', shortName: 'Estrela', summary: 'O caracol não pode te escolher.', description: 'O caracol não consegue te escolher. Se já estava vindo, ele desiste no lugar onde está.', durationMs: 2 * HOUR_MS, charges: null, durationLabel: 'vale por 2 horas' },
+  { id: 'fire-flower', category: 'buff', scope: 'account', name: 'Flor de Fogo', shortName: 'Flor', summary: 'Três redirecionamentos de graça.', description: 'Seus próximos três redirecionamentos saem de graça e não encarecem o preço do mundo.', durationMs: 2 * HOUR_MS, charges: 3, durationLabel: '3 usos, até 2 horas' },
+  { id: 'boomerang', category: 'buff', scope: 'account', name: 'Flor Bumerangue', shortName: 'Bumerangue', summary: 'Rouba 20% das moedas de alguém.', description: 'Escolha alguém vivo no mapa e traga 20% das moedas dessa pessoa para o seu bolso.', durationMs: 24 * HOUR_MS, charges: 1, durationLabel: '1 uso, até 24 horas' },
+  { id: 'bullet-bill', category: 'buff', scope: 'account', name: 'Bullet Bill', shortName: 'Bullet Bill', summary: 'Te lança para a cidade mais longe do caracol.', description: 'Você foi lançado para a cidade do Brasil mais distante de onde o caracol está agora.', durationMs: null, charges: null, durationLabel: 'na hora' },
+  { id: 'coin', category: 'buff', scope: 'account', name: 'Moeda', shortName: 'Moeda', summary: 'Tudo que você compra custa metade.', description: 'Redirecionar, acelerar, comprar desconto e comprar na loja custam metade para você.', durationMs: 6 * HOUR_MS, charges: null, durationLabel: 'vale por 6 horas' },
+  { id: 'shield', category: 'buff', scope: 'account', name: 'Casco defensivo', shortName: 'Escudo', summary: 'Bloqueia o próximo ataque de alguém.', description: 'O próximo redirecionamento ou bumerangue de outra pessoa contra você bate no escudo e não faz nada.', durationMs: 24 * HOUR_MS, charges: 1, durationLabel: 'até usar, máximo 24 horas' },
+  { id: 'red-shell', category: 'debuff', scope: 'account', name: 'Casco vermelho', shortName: 'Casco', summary: 'O caracol te marca e ninguém tira o foco.', description: 'O caracol te marca agora e ninguém consegue mandar ele atrás de outra pessoa.', durationMs: 2 * HOUR_MS, charges: null, durationLabel: 'vale por 2 horas' },
+  { id: 'bomb', category: 'debuff', scope: 'account', name: 'Bomba', shortName: 'Bomba', summary: 'Perde metade das moedas na hora.', description: 'Metade das suas moedas explodiu. O ganho de moedas continua igual.', durationMs: null, charges: null, durationLabel: 'na hora' },
+  { id: 'lightning', category: 'debuff', scope: 'world', name: 'Raio', shortName: 'Raio', summary: 'Tudo em dobro para o jogo inteiro. Inclusive você.', description: 'Tudo fica o dobro do preço para o jogo inteiro, inclusive para você.', durationMs: HOUR_MS, charges: null, durationLabel: 'vale por 1 hora' },
+  { id: 'blooper', category: 'debuff', scope: 'account', name: 'Blooper', shortName: 'Blooper', summary: 'Tinta: você para de ver onde o caracol está.', description: 'Tinta na tela: você para de ver onde o caracol está, a que distância e quando chega.', durationMs: 2 * HOUR_MS, charges: null, durationLabel: 'vale por 2 horas' },
+  { id: 'freeze', category: 'debuff', scope: 'account', name: 'Congelamento', shortName: 'Gelo', summary: 'Não pode comprar, acelerar nem redirecionar.', description: 'Você não pode comprar, acelerar, redirecionar nem lançar bumerangue. As moedas continuam entrando.', durationMs: HOUR_MS, charges: null, durationLabel: 'vale por 1 hora' },
+  { id: 'banana', category: 'debuff', scope: 'account', name: 'Banana', shortName: 'Banana', summary: 'O caracol vem 50% mais rápido atrás de você.', description: 'Quando o caracol estiver vindo atrás de você, ele anda 50% mais rápido.', durationMs: 4 * HOUR_MS, charges: null, durationLabel: 'vale por 4 horas' },
+];
+
+export const caracolRouletteItemById: ReadonlyMap<CaracolRouletteItemId, CaracolRouletteItem> = new Map(
+  CARACOL_ROULETTE_CATALOG.map((item) => [item.id, item]),
+);
+
+export interface CaracolEffectView {
+  itemId: CaracolRouletteItemId;
+  expiresAt: number;
+  charges: number | null;
+}
+
+export interface CaracolRouletteView {
+  /** Instante do relógio do servidor em que o próximo giro abre; `null` quando já está disponível. */
+  availableAt: number | null;
+  lastItemId: CaracolRouletteItemId | null;
+}
+
 export type CaracolOutfit = Record<CaracolCosmeticSlot, string | null>;
 
 export function emptyCaracolOutfit(): CaracolOutfit {
@@ -79,6 +154,7 @@ export interface CaracolPlayerView {
   online: boolean;
   isYou: boolean;
   outfit: CaracolOutfit;
+  effectItemIds: CaracolRouletteItemId[];
 }
 
 export interface CaracolYouView {
@@ -88,12 +164,18 @@ export interface CaracolYouView {
   coins: number;
   city: CaracolCity | null;
   speedDiscountLevel: number;
+  /** Preço do próximo nível de desconto já com Moeda e Raio; `null` no máximo. */
+  discountCost: number | null;
+  roulette: CaracolRouletteView;
+  effects: CaracolEffectView[];
 }
 
 export interface CaracolWorldView {
   snail: {
-    lat: number;
-    lon: number;
+    /** Posição, distância e chegada vêm `null` para quem está com Blooper. */
+    lat: number | null;
+    lon: number | null;
+    hidden: boolean;
     speedKmh: number;
     speedLevel: number;
     speedCost: number;
@@ -104,6 +186,7 @@ export interface CaracolWorldView {
     redirectCost: number;
     outfit: CaracolOutfit;
   };
+  effects: CaracolEffectView[];
   serverNow: number;
 }
 
@@ -135,6 +218,10 @@ export interface CaracolSelectCityInput {
 }
 
 export interface CaracolRedirectInput {
+  targetNickname: string;
+}
+
+export interface CaracolBoomerangInput {
   targetNickname: string;
 }
 
@@ -172,7 +259,8 @@ export type CaracolHistoryType =
   | 'target'
   | 'approaching'
   | 'death'
-  | 'shop';
+  | 'shop'
+  | 'roulette';
 
 export interface CaracolHistoryEntry {
   id: string;
@@ -215,9 +303,17 @@ export interface CaracolActionFailure {
   message: string;
 }
 
+export interface CaracolRouletteSuccess {
+  ok: true;
+  itemId: CaracolRouletteItemId;
+  category: CaracolRouletteCategory;
+  state: CaracolStateView;
+}
+
 export type CaracolAuthResult = CaracolAuthSuccess | CaracolActionFailure;
 export type CaracolActionResult = CaracolAuthSuccess | CaracolActionSuccess | CaracolActionFailure;
 export type CaracolHistoryResult = CaracolHistoryPage | CaracolActionFailure;
+export type CaracolRouletteResult = CaracolRouletteSuccess | CaracolActionFailure;
 
 export interface CaracolDeathPayload {
   nickname: string;
@@ -225,6 +321,6 @@ export interface CaracolDeathPayload {
 }
 
 export interface CaracolNoticePayload {
-  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount' | 'shop';
+  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount' | 'shop' | 'roulette' | 'effect-expired' | 'shield';
   message: string;
 }
