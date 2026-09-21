@@ -1,11 +1,13 @@
-import { memo, useId, useMemo, type JSX } from 'react';
+import { memo, useId, useMemo, type CSSProperties, type JSX } from 'react';
 import type { CaracolCosmeticWearer, CaracolOutfit } from '../shared/caracol';
 import {
+  CARACOL_ART_PALETTE as C,
   CARACOL_INK_MIN_PX,
   caracolArtLayers,
   caracolArtViewBox,
   sameCaracolOutfit,
   type CaracolArtCrop,
+  type CaracolMedallionTone,
 } from './caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from './caracolArt/PlayerArt';
 import { SNAIL_ART } from './caracolArt/SnailArt';
@@ -55,3 +57,43 @@ export const CaracolFigure = memo(function CaracolFigure({ wearer, outfit, crop,
     <g filter={ink ? `url(#${ids.ink})` : undefined}>{drawings}</g>
   </svg>;
 }, sameFigureProps);
+
+export interface CaracolMedallionProps {
+  wearer: CaracolCosmeticWearer;
+  outfit: CaracolOutfit;
+  crop?: CaracolArtCrop;
+  size: number;
+  tone?: CaracolMedallionTone;
+  label: string;
+}
+
+/**
+ * O retrato circular usado no HTML. O tamanho entra por --medallion-size para a
+ * media query conseguir sobrescrever, e o selo fica fora do círculo, que corta o
+ * que passa da borda. O anel nunca é o único portador do estado: cada tom tem um
+ * texto na mesma tela que diz a mesma coisa.
+ */
+export function CaracolMedallion({ wearer, outfit, crop = 'portrait', size, tone = 'default', label }: CaracolMedallionProps): JSX.Element {
+  return <span className="caracol-avatar" role="img" aria-label={label} style={{ '--medallion-size': `${size}px` } as CSSProperties}>
+    <span className={`caracol-medallion tone-${tone}`}><CaracolFigure wearer={wearer} outfit={outfit} crop={crop} sizePx={size} /></span>
+    {tone === 'equipped' && <span className="caracol-avatar-badge badge-check"><CheckBadge /></span>}
+    {tone === 'dead' && <span className="caracol-avatar-badge badge-skull"><SkullBadge /></span>}
+  </span>;
+}
+
+function CheckBadge(): JSX.Element {
+  return <svg viewBox="0 0 20 20" aria-hidden="true">
+    <circle cx={10} cy={10} r={8.5} fill={C.acid} stroke={C.ink} strokeWidth={2} />
+    <path d="M6 10.5 L8.8 13.2 L14 7.4" fill="none" stroke={C.ink} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+  </svg>;
+}
+
+function SkullBadge(): JSX.Element {
+  return <svg viewBox="0 0 20 20" aria-hidden="true">
+    <circle cx={10} cy={10} r={8.5} fill={C.paper} stroke={C.ink} strokeWidth={2} />
+    <path d="M5.5 10.5 V8.6 A4.5 4.5 0 0 1 14.5 8.6 V10.5 L13 13.6 H7 Z" fill="#bcb5c7" stroke={C.ink} strokeWidth={1.4} strokeLinejoin="round" />
+    <circle cx={8.2} cy={9.2} r={1.1} fill={C.ink} />
+    <circle cx={11.8} cy={9.2} r={1.1} fill={C.ink} />
+    <path d="M8.4 12 H11.6" fill="none" stroke={C.ink} strokeWidth={1.1} strokeLinecap="round" />
+  </svg>;
+}

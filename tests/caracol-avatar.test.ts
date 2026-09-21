@@ -2,8 +2,8 @@ import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CARACOL_COSMETIC_CATALOG, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
-import { CaracolFigure, sameFigureProps } from '../src/CaracolAvatar';
-import { CARACOL_ART_ITEM_IDS, caracolArtViewBox, type CaracolArtCrop } from '../src/caracolArt/model';
+import { CaracolFigure, CaracolMedallion, sameFigureProps } from '../src/CaracolAvatar';
+import { CARACOL_ART_ITEM_IDS, caracolArtViewBox, type CaracolArtCrop, type CaracolMedallionTone } from '../src/caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from '../src/caracolArt/PlayerArt';
 import { SNAIL_ART } from '../src/caracolArt/SnailArt';
 
@@ -126,5 +126,41 @@ describe('CaracolFigure', () => {
     expect(sameFigureProps(props, { ...props, outfit: { ...outfit } })).toBe(true);
     expect(sameFigureProps(props, { ...props, crop: 'cap' })).toBe(false);
     expect((CaracolFigure as unknown as { compare: unknown }).compare).toBe(sameFigureProps);
+  });
+});
+
+describe('CaracolMedallion', () => {
+  function medallion(props: Partial<Parameters<typeof CaracolMedallion>[0]> = {}): string {
+    return renderToStaticMarkup(createElement(CaracolMedallion, { wearer: 'player', outfit: emptyCaracolOutfit(), size: 40, label: 'Ana vestida', ...props }));
+  }
+
+  it('é uma imagem com o rótulo recebido, e o SVG interno fica escondido (ARTE-11)', () => {
+    const markup = medallion({ label: 'Ana vestida' });
+    expect(markup).toMatch(/^<span class="caracol-avatar" role="img" aria-label="Ana vestida"/);
+    expect(markup).toMatch(/<svg[^>]* aria-hidden="true"/);
+  });
+
+  it('desenha dentro de .caracol-medallion com a classe do tom (ARTE-08)', () => {
+    expect(medallion({ tone: 'you' })).toMatch(/<span class="caracol-medallion tone-you"><svg[^>]*class="caracol-figure"/);
+    expect(medallion()).toContain('class="caracol-medallion tone-default"');
+  });
+
+  it('passa o tamanho pela variável --medallion-size, nunca por width inline', () => {
+    const markup = medallion({ size: 40 });
+    const style = /^<span[^>]* style="([^"]*)"/.exec(markup)?.[1];
+    expect(style).toBe('--medallion-size:40px');
+  });
+
+  it('põe selo de check só no equipado e de caveira só no morto', () => {
+    const tones: CaracolMedallionTone[] = ['default', 'you', 'target', 'dead', 'equipped', 'unaffordable'];
+    for (const tone of tones) {
+      const markup = medallion({ tone });
+      expect(markup.includes('badge-check'), tone).toBe(tone === 'equipped');
+      expect(markup.includes('badge-skull'), tone).toBe(tone === 'dead');
+    }
+  });
+
+  it('usa o recorte de retrato quando não recebe recorte', () => {
+    expect(medallion({ wearer: 'snail' })).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
   });
 });
