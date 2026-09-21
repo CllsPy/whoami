@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CARACOL_ART_ITEM_IDS } from '../src/caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from '../src/caracolArt/PlayerArt';
+import { SNAIL_ART } from '../src/caracolArt/SnailArt';
 
 // Os componentes de arte rodam em node com renderToStaticMarkup: sem jsdom e sem
 // socket. As asserções olham camadas (`data-layer`), viewBox e ids, não a geometria.
@@ -50,5 +51,23 @@ describe('arte do jogador', () => {
 
   it('pinta a pele do jogador com #c78261 (ARTE-15)', () => {
     expect(inSvg(PLAYER_ART.head(ids))).toContain('fill="#c78261"');
+  });
+});
+
+describe('arte do caracol', () => {
+  it('tem uma camada para cada parte do corpo e para cada peça do catálogo', () => {
+    expect(Object.keys(SNAIL_ART).sort()).toEqual(['body', 'stalks', 'head', ...CARACOL_ART_ITEM_IDS].sort());
+  });
+
+  for (const [key, draw] of Object.entries(SNAIL_ART)) {
+    it(`desenha ${key} numa camada própria`, () => {
+      expect(layersOf(inSvg(draw(ids)))).toEqual([key]);
+    });
+  }
+
+  it('pinta a concha com #d86b51 e o corpo com #efb37d (ARTE-15)', () => {
+    const body = inSvg(SNAIL_ART.body(ids));
+    expect(body).toMatch(/<circle[^>]*fill="#d86b51"/);
+    expect(body).toMatch(/<path[^>]*fill="#efb37d"/);
   });
 });
