@@ -1,7 +1,9 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { CARACOL_ART_ITEM_IDS } from '../src/caracolArt/model';
+import { CARACOL_COSMETIC_CATALOG, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
+import { CaracolFigure, sameFigureProps } from '../src/CaracolAvatar';
+import { CARACOL_ART_ITEM_IDS, caracolArtViewBox, type CaracolArtCrop } from '../src/caracolArt/model';
 import { PLAYER_ART, type CaracolArtIds } from '../src/caracolArt/PlayerArt';
 import { SNAIL_ART } from '../src/caracolArt/SnailArt';
 
@@ -69,5 +71,60 @@ describe('arte do caracol', () => {
     const body = inSvg(SNAIL_ART.body(ids));
     expect(body).toMatch(/<circle[^>]*fill="#d86b51"/);
     expect(body).toMatch(/<path[^>]*fill="#efb37d"/);
+  });
+});
+
+describe('CaracolFigure', () => {
+  const crops: CaracolArtCrop[] = ['full', 'portrait', 'pants', 'shirt', 'watch', 'glasses', 'cap'];
+
+  function figure(props: Partial<Parameters<typeof CaracolFigure>[0]> = {}): string {
+    return renderToStaticMarkup(createElement(CaracolFigure, { wearer: 'player', outfit: emptyCaracolOutfit(), crop: 'portrait', sizePx: 40, ...props }));
+  }
+
+  for (const wearer of ['player', 'snail'] as const) {
+    for (const item of CARACOL_COSMETIC_CATALOG) {
+      it(`${wearer} veste ${item.id} numa única camada do slot ${item.slot} (ARTE-01)`, () => {
+        const layers = layersOf(figure({ wearer, outfit: { ...emptyCaracolOutfit(), [item.slot]: item.id } }));
+        const sameSlot = CARACOL_COSMETIC_CATALOG.filter((other) => other.slot === item.slot).map((other) => other.id);
+        expect(layers.filter((layer) => layer === item.id)).toHaveLength(1);
+        expect(layers.filter((layer) => sameSlot.includes(layer))).toEqual([item.id]);
+      });
+    }
+
+    for (const crop of crops) {
+      it(`${wearer} · ${crop} renderiza o viewBox do recorte (ARTE-07)`, () => {
+        expect(figure({ wearer, crop })).toContain(`viewBox="${caracolArtViewBox(wearer, crop)}"`);
+      });
+    }
+  }
+
+  it('só aplica a tinta a partir de 56 px (ARTE-09)', () => {
+    expect(figure({ sizePx: 55 })).not.toContain('filter=');
+    const inked = figure({ sizePx: 56 });
+    const ref = /filter="url\(#([^)]+)\)"/.exec(inked)?.[1];
+    expect(ref).toBeDefined();
+    expect(inked).toContain(`<filter id="${ref}"`);
+  });
+
+  it('não repete id de clipPath nem de filtro entre duas figuras da mesma página (ARTE-10)', () => {
+    const striped: CaracolOutfit = { ...emptyCaracolOutfit(), shirt: 'shirt-striped' };
+    const one = createElement(CaracolFigure, { wearer: 'player', outfit: striped, crop: 'portrait', sizePx: 64 });
+    const two = createElement(CaracolFigure, { wearer: 'player', outfit: striped, crop: 'portrait', sizePx: 64 });
+    const markup = renderToStaticMarkup(createElement('div', null, one, two));
+    const idList = Array.from(markup.matchAll(/ id="([^"]+)"/g), (match) => match[1]!);
+    expect(idList).toHaveLength(8);
+    expect(new Set(idList).size).toBe(idList.length);
+  });
+
+  it('esconde o desenho dos leitores de tela', () => {
+    expect(figure()).toMatch(/^<svg[^>]* aria-hidden="true"/);
+  });
+
+  it('não redesenha quando o outfit chega em objeto novo com os mesmos valores (ARTE-13)', () => {
+    const outfit: CaracolOutfit = { ...emptyCaracolOutfit(), cap: 'cap-flat' };
+    const props = { wearer: 'player' as const, outfit, crop: 'portrait' as const, sizePx: 40 };
+    expect(sameFigureProps(props, { ...props, outfit: { ...outfit } })).toBe(true);
+    expect(sameFigureProps(props, { ...props, crop: 'cap' })).toBe(false);
+    expect((CaracolFigure as unknown as { compare: unknown }).compare).toBe(sameFigureProps);
   });
 });
