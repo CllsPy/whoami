@@ -27,11 +27,9 @@ export interface CaracolShopDrawerProps {
 // botão do medalhão fixa ou solta a prova, que é o caminho no toque. Nada aqui
 // compra nem equipa.
 //
-// SPEC_DEVIATION: o design previa só `{ trying }`. Sem `pinned`, um toque chega
-// como mouseenter + foco + clique e o clique desfaria na hora a prova que o
-// hover acabou de fazer; com mouse, clicar num card em hover também desfaria.
-// Reason: LOJA-12 manda o botão provar e, acionado de novo, desfazer. Com
-// `pinned`, hover e foco só fazem prova temporária e não mexem na fixada.
+// Hover e foco só fazem prova temporária e não mexem numa prova fixada. Sem
+// `pinned`, um toque chega como mouseenter + foco + clique, e o clique desfaria
+// na hora a prova que o hover acabou de fazer.
 export interface ShopPreviewState {
   trying: string | null;
   pinned: boolean;
