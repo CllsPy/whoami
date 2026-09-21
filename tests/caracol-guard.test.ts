@@ -32,4 +32,15 @@ describe('guarda do novo design', () => {
       expect(text, file).not.toMatch(/mapPlayerAvatar|mapDeadAvatar|mapSnailAvatar/);
     }
   });
+
+  it('não sobra CSS dos glifos antigos do mapa e da lista (LISTA-03, MAPA-05)', () => {
+    for (const selector of ['.map-avatar-', '.map-snail-', '.map-dead-avatar', '.caracol-skull', '.legend-skull']) {
+      expect(STYLES, selector).not.toContain(selector);
+    }
+  });
+
+  it('não pinta todo <circle> dos tokens, que repintaria olhos, lentes e mostradores', () => {
+    expect(STYLES).not.toMatch(/\.(map-player|snail-token)[^{}]*\bcircle\s*[{,]/);
+    for (const tone of ['you', 'target', 'dead']) expect(STYLES).toContain(`.map-medallion-ring.tone-${tone}`);
+  });
 });

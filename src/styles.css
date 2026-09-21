@@ -939,45 +939,11 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .caracol-shop-preview .micro-label { color: var(--muted-dark); }
 .caracol-shop-preview.is-trying .micro-label { color: var(--coral); }
 
-.map-player-halo { fill: var(--sky); stroke: var(--night); stroke-width: 2; }
-.map-player-you .map-player-halo { fill: var(--acid); }
-.map-player-target .map-player-halo { fill: var(--coral); }
-.map-player-dead .map-player-halo { fill: #8b8498; stroke: var(--paper); stroke-dasharray: 2 2; }
-.map-avatar-player { overflow: visible; }
-.map-avatar-skin { fill: #c78261; stroke: var(--night); stroke-width: 1; }
-.map-avatar-shirt { fill: var(--sky); stroke: var(--night); stroke-width: 1; }
-.map-avatar-shirt.shirt-basic { fill: #e8d6c2; }
-.map-avatar-shirt.shirt-striped { fill: var(--coral); }
-.map-avatar-shirt.shirt-tropical { fill: #4f9f7f; }
-.map-avatar-pants { fill: #4d628f; stroke: var(--night); stroke-width: 1; }
-.map-avatar-pants.pants-cargo { fill: #7b7753; }
-.map-avatar-pants.pants-neon-race { fill: var(--acid); }
-.map-avatar-watch { fill: var(--acid); stroke: var(--night); stroke-width: 0.5; }
-.map-avatar-glasses { fill: none; stroke: var(--night); stroke-width: 1.4; }
-.map-avatar-cap { fill: var(--coral); stroke: var(--night); stroke-width: 1; }
-.map-avatar-cap.cap-trucker { fill: var(--sky); }
-.map-avatar-cap.cap-bucket { fill: #7b7753; }
-.map-dead-avatar { overflow: visible; }
-.map-dead-avatar path:first-child { fill: #bcb5c7; stroke: var(--night); stroke-width: 1; }
-.map-dead-avatar circle { fill: var(--night); }
-.map-dead-avatar path:last-child { fill: none; stroke: var(--night); stroke-width: 1; }
-.map-snail-shadow { fill: rgba(21, 21, 37, 0.26); }
-.map-snail-shell { fill: #d86b51; stroke: var(--paper); stroke-width: 1.4; }
-.map-snail-body { fill: #efb37d; stroke: var(--paper); stroke-width: 1.2; }
-.map-snail-antenna { fill: none; stroke: var(--paper); stroke-width: 1; }
-.map-snail-eye { fill: var(--paper); stroke: var(--night); stroke-width: 0.7; }
-.map-snail-pants { fill: #4d628f; stroke: var(--night); stroke-width: 1; }
-.map-snail-pants.pants-cargo { fill: #7b7753; }
-.map-snail-pants.pants-neon-race { fill: var(--acid); }
-.map-snail-shirt { fill: var(--sky); stroke: var(--night); stroke-width: 1; }
-.map-snail-shirt.shirt-basic { fill: #e8d6c2; }
-.map-snail-shirt.shirt-striped { fill: var(--coral); }
-.map-snail-shirt.shirt-tropical { fill: #4f9f7f; }
-.map-snail-watch { fill: var(--acid); stroke: var(--night); stroke-width: 0.7; }
-.map-snail-glasses { fill: none; stroke: var(--night); stroke-width: 1.3; }
-.map-snail-cap { fill: var(--coral); stroke: var(--night); stroke-width: 1; }
-.map-snail-cap.cap-trucker { fill: var(--sky); }
-.map-snail-cap.cap-bucket { fill: #7b7753; }
+/* O anel do retrato no mapa; a espessura e o tracejado do morto vêm do SVG. */
+.map-medallion-ring { fill: none; stroke: var(--sky); }
+.map-medallion-ring.tone-you { stroke: var(--acid); }
+.map-medallion-ring.tone-target { stroke: var(--coral); }
+.map-medallion-ring.tone-dead { stroke: #8b8498; }
 
 .caracol-wallet { display: flex; align-items: center; gap: 15px; }
 .caracol-wallet-copy { min-width: 0; }
@@ -1034,17 +1000,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .snail-route { stroke: var(--coral); stroke-width: 1.6; stroke-dasharray: 5 7; opacity: 0.85; }
 
-.map-player circle { fill: var(--sky); stroke: var(--night); stroke-width: 2; }
-
 .map-player text { fill: var(--paper); font: 10px var(--mono); paint-order: stroke; stroke: var(--night); stroke-width: 3px; stroke-linejoin: round; }
-
-.map-player-you circle { fill: var(--acid); }
-
-.map-player-target circle { fill: var(--coral); }
-
-.snail-token circle { fill: var(--coral); stroke: var(--paper); stroke-width: 2; }
-
-.snail-token text { font-size: 20px; }
 
 .map-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font: 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
 
@@ -1055,7 +1011,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .legend-you { background: var(--acid); }
 
 .legend-target { background: var(--coral); }
-.legend-skull { display: inline-block; margin-right: 5px; color: #bcb5c7; font-size: 13px; line-height: 8px; vertical-align: -1px; }
+.legend-ring { width: 12px; height: 12px; margin-right: 5px; vertical-align: -2px; }
 
 .legend-snail { color: var(--paper); }
 
@@ -1136,8 +1092,6 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .caracol-player-row.is-target { border-right: 3px solid var(--coral); padding-right: 6px; }
 
 .caracol-player-row.is-dead { opacity: 0.78; background: rgba(139, 132, 152, 0.08); }
-
-.caracol-skull { display: grid; width: 39px; height: 37px; flex: 0 0 39px; place-items: center; color: #8b8498; font-size: 24px; line-height: 1; }
 
 .online-mark, .offline-mark { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--acid-dark); }
 
