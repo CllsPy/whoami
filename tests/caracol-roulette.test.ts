@@ -2,6 +2,8 @@ import { hashSync } from 'bcryptjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CARACOL_BRAZILIA,
+  CARACOL_COIN_INTERVAL_MS,
+  CARACOL_ONLINE_COINS_PER_INTERVAL,
   CARACOL_ROULETTE_CATALOG,
   CARACOL_ROULETTE_COOLDOWN_MS,
   emptyCaracolOutfit,
@@ -13,7 +15,7 @@ import {
 } from '../shared/caracol';
 import { brazilianCities, cityById } from '../shared/cities';
 import { createCaracolManager, type CaracolGameManager } from '../server/caracol/game';
-import { distanceKm } from '../server/caracol/geo';
+import { distanceKm, moveTowards } from '../server/caracol/geo';
 import {
   caracolEffectId,
   MemoryCaracolStore,
@@ -39,13 +41,22 @@ const PORTO_ALEGRE = '4314902';
 
 class TestStore extends MemoryCaracolStore {
   failNextCommit = false;
+  /** Roda antes ou depois do próximo commit gravar: um tick que chega durante o `await`. */
+  beforeNextCommit: (() => Promise<void>) | null = null;
+  afterNextCommit: (() => Promise<void>) | null = null;
 
   override async commit(changes: CaracolCommit): Promise<void> {
     if (this.failNextCommit) {
       this.failNextCommit = false;
       throw new Error('banco fora do ar');
     }
+    const before = this.beforeNextCommit;
+    const after = this.afterNextCommit;
+    this.beforeNextCommit = null;
+    this.afterNextCommit = null;
+    await before?.();
     await super.commit(changes);
+    await after?.();
   }
 }
 
@@ -592,6 +603,7 @@ describe('roleta do Caracol: buffs', () => {
     expect(thrown.state.you.coins).toBe(10 + 10);
     expect(effectOf(thrown.state, 'boomerang')).toBeNull();
     expect((await sync(rich)).you.coins).toBe(44);
+    expect(rich.socket.notices('boomerang')).toHaveLength(1);
     expect(failureCode(await act(thief, 'caracol:boomerang', { targetNickname: 'Rico' }))).toBe('NO_CHARGE');
   });
 
@@ -887,5 +899,189 @@ describe('roleta do Caracol: debuffs', () => {
     const curious = await connect(world, 'Curioso');
     const row = curious.state.players.find((player) => player.nickname === 'Enfeitado');
     expect(row?.effectItemIds).toEqual(['shield', 'banana']);
+  });
+});
+
+describe('roleta do Caracol: aviso de aproximação de quem se muda', () => {
+  // 600 km/h: os 10 minutos do aviso viram 100 km, e a perseguição cabe no teste.
+  const SPEED_LEVEL = 6;
+  const SPEED_KMH = SPEED_LEVEL * 100;
+
+  async function snailNear(store: TestStore, now: number, cityId: string, km: number): Promise<void> {
+    const snail = moveTowards(cityById.get(cityId)!, CARACOL_BRAZILIA, km);
+    const { world } = await store.loadSnapshot();
+    await store.saveWorld({ ...world, snailLat: snail.lat, snailLon: snail.lon, speedLevel: SPEED_LEVEL, lastTickAt: now });
+  }
+
+  async function approachingCount(store: TestStore): Promise<number> {
+    return (await store.listHistory({ limit: 50 })).entries.filter((entry) => entry.type === 'approaching').length;
+  }
+
+  it.each([
+    ['Cogumelo', async (world: World, player: Player) => {
+      await spinItem(world, player, 'mushroom');
+      const moved = await act(player, 'caracol:select-city', { cityId: RIO });
+      expect(moved.ok).toBe(true);
+    }],
+    ['Bullet Bill', async (world: World, player: Player) => {
+      await spinItem(world, player, 'bullet-bill');
+    }],
+  ])('%s: o alvo que se muda recebe o aviso de novo na cidade nova', async (_item, move) => {
+    const { store, now } = fresh();
+    await seedAccount(store, now.value, 'Mudado', SAO_PAULO);
+    await snailNear(store, now.value, SAO_PAULO, SPEED_KMH / 10);
+    const world = await openWorld(store, now);
+    expect(await approachingCount(store)).toBe(1);
+
+    const player = await connect(world, 'Mudado');
+    await move(world, player);
+    const moved = await sync(player);
+    expect(moved.you.city?.id).not.toBe(SAO_PAULO);
+    expect(moved.world.snail.targetNickname).toBe('Mudado');
+    expect(moved.world.snail.etaMs!).toBeGreaterThan(10 * 60_000);
+
+    // Leva o caracol até 6 min da cidade nova, sem chegar.
+    now.value += (moved.world.snail.distanceKm! - SPEED_KMH / 10) / SPEED_KMH * HOUR;
+    await world.manager.tickOnce();
+    const chased = await sync(player);
+    expect(chased.you.alive).toBe(true);
+    expect(chased.world.snail.etaMs!).toBeLessThanOrEqual(10 * 60_000);
+    expect(await approachingCount(store)).toBe(2);
+    expect(player.socket.notices('approaching')).toHaveLength(1);
+  });
+});
+
+describe('roleta do Caracol: gravação antes da memória', () => {
+  it('responde com falha e não gasta nada quando a gravação falha', async () => {
+    const { store, now } = fresh();
+    const actor = await seedAccount(store, now.value, 'Azarento', SAO_PAULO, { coins: 100 });
+    await seedAccount(store, now.value, 'Vitima', RIO, { coins: 50 });
+    await seedEffect(store, actor.id, 'boomerang', now.value);
+    await seedEffect(store, actor.id, 'mushroom', now.value);
+    const world = await openWorld(store, now);
+    const player = await connect(world, 'Azarento');
+    const victim = await connect(world, 'Vitima');
+    const before = await sync(player);
+    expect(before.world.snail.targetNickname).toBe('Azarento');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const attempts: Array<[string, unknown]> = [
+      ['caracol:boomerang', { targetNickname: 'Vitima' }],
+      ['caracol:redirect', { targetNickname: 'Vitima' }],
+      ['caracol:select-city', { cityId: MANAUS }],
+    ];
+    for (const [event, payload] of attempts) {
+      store.failNextCommit = true;
+      expect(failureCode(await act(player, event, payload)), event).toBe('SAVE_FAILED');
+    }
+
+    const after = await sync(player);
+    expect(after.you.coins).toBe(100);
+    expect(after.you.effects).toEqual(before.you.effects);
+    expect(after.you.city?.id).toBe(SAO_PAULO);
+    expect(after.world.snail.targetNickname).toBe('Azarento');
+    expect(after.world.snail.redirectCost).toBe(before.world.snail.redirectCost);
+    expect((await sync(victim)).you.coins).toBe(50);
+    expect((await store.loadSnapshot()).effects).toHaveLength(2);
+    expect(logged).toHaveBeenCalledTimes(3);
+    logged.mockRestore();
+  });
+
+  it('a Bomba tira o que anunciou mesmo quando o tick paga moedas no meio da gravação', async () => {
+    const { store, now } = fresh();
+    await seedAccount(store, now.value, 'Explodido', SAO_PAULO, { coins: 40 });
+    const world = await openWorld(store, now);
+    const player = await connect(world, 'Explodido');
+    store.afterNextCommit = async () => {
+      now.value += 10 * CARACOL_COIN_INTERVAL_MS;
+      await world.manager.tickOnce();
+    };
+
+    const state = await spinItem(world, player, 'bomb');
+    expect(state.you.coins).toBe(40 + 10 * CARACOL_ONLINE_COINS_PER_INTERVAL - 20);
+    expect((await store.loadSnapshot()).accounts[0]!.coins).toBe(state.you.coins);
+    const entry = (await store.listHistory({ limit: 20 })).entries.find((candidate) => candidate.type === 'roulette');
+    expect(entry?.amount).toBe(20);
+  });
+
+  it('não grava vivo quem o caracol pegou no meio do giro', async () => {
+    const { store, now } = fresh();
+    await seedAccount(store, now.value, 'Condenado', BRASILIA, { coins: 40 });
+    const world = await openWorld(store, now);
+    const player = await connect(world, 'Condenado');
+    store.beforeNextCommit = async () => {
+      now.value += 1_000;
+      await world.manager.tickOnce();
+    };
+
+    const state = await spinItem(world, player, 'bomb');
+    expect(state.you.alive).toBe(false);
+    expect(state.you.coins).toBe(0);
+    const persisted = (await store.loadSnapshot()).accounts[0]!;
+    expect(persisted.alive).toBe(false);
+    expect(persisted.coins).toBe(0);
+  });
+});
+
+describe('roleta do Caracol: PgCaracolStore', () => {
+  function pgStore(pool: object): PgCaracolStore {
+    const store = new PgCaracolStore('postgres://caracol@127.0.0.1:1/caracol');
+    Object.assign(store, { pool });
+    return store;
+  }
+
+  it('devolve o erro original e descarta a conexão quando o ROLLBACK também falha', async () => {
+    const { world } = await new MemoryCaracolStore().loadSnapshot();
+    const release = vi.fn();
+    let failWrite = true;
+    const client = {
+      release,
+      query: vi.fn(async (sql: string) => {
+        if (failWrite && sql.includes('UPDATE caracol_world')) throw new Error('escrita recusada');
+        if (failWrite && sql === 'ROLLBACK') throw new Error('conexão perdida');
+        return { rows: [] };
+      }),
+    };
+    const store = pgStore({ connect: vi.fn(async () => client) });
+
+    await expect(store.commit({ world })).rejects.toThrow('escrita recusada');
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ message: 'conexão perdida' }));
+
+    failWrite = false;
+    release.mockClear();
+    await store.commit({ world });
+    expect(release).toHaveBeenCalledWith(undefined);
+  });
+
+  it('lê os TIMESTAMPTZ do Postgres sem perder os milissegundos', async () => {
+    const at = new Date(Date.UTC(2026, 8, 21, 12, 0, 0, 123));
+    const city = cityById.get(SAO_PAULO)!;
+    const rows: Record<string, unknown[]> = {
+      caracol_accounts: [{
+        id: 'conta-1', nickname: 'Preciso', normalized_nickname: 'preciso', password_hash: PASSWORD_HASH,
+        coins: 5, alive: true, city_id: city.id, city_name: city.name, city_uf: city.uf, city_lat: city.lat, city_lon: city.lon,
+        speed_discount_level: 0, cosmetic_owned_item_ids: [], cosmetic_outfit: {},
+        last_coin_accrued_at: at, last_roulette_at: at, last_roulette_item_id: 'coin', created_at: at, updated_at: at,
+      }],
+      caracol_world: [{
+        snail_lat: CARACOL_BRAZILIA.lat, snail_lon: CARACOL_BRAZILIA.lon, speed_level: 0, redirect_level: 0,
+        target_account_id: null, snail_cosmetic_owned_item_ids: [], snail_cosmetic_outfit: {}, last_tick_at: at,
+      }],
+      caracol_push_subscriptions: [],
+      caracol_effects: [{
+        id: caracolEffectId('account', 'conta-1', 'coin'), scope: 'account', account_id: 'conta-1', item_id: 'coin',
+        created_at: at, expires_at: new Date(at.getTime() + HOUR), charges: null,
+      }],
+    };
+    const store = pgStore({
+      query: vi.fn(async (sql: string) => ({ rows: rows[/FROM (\w+)/.exec(sql)![1]!] ?? [] })),
+    });
+
+    const snapshot = await store.loadSnapshot();
+    expect(snapshot.accounts[0]!.lastRouletteAt).toBe(at.getTime());
+    expect(snapshot.accounts[0]!.lastCoinAccruedAt).toBe(at.getTime());
+    expect(snapshot.world.lastTickAt).toBe(at.getTime());
+    expect(snapshot.effects[0]!.createdAt).toBe(at.getTime());
+    expect(snapshot.effects[0]!.expiresAt).toBe(at.getTime() + HOUR);
   });
 });

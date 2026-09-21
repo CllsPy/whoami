@@ -321,6 +321,6 @@ export interface CaracolDeathPayload {
 }
 
 export interface CaracolNoticePayload {
-  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount' | 'shop' | 'roulette' | 'effect-expired' | 'shield';
+  code: 'targeted' | 'approaching' | 'speed' | 'redirected' | 'death' | 'discount' | 'shop' | 'roulette' | 'boomerang' | 'effect-expired' | 'shield';
   message: string;
 }

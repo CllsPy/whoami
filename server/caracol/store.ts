@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Pool, type PoolConfig } from 'pg';
+import { Pool, type PoolClient, type PoolConfig } from 'pg';
 import {
   caracolRouletteItemById,
   emptyCaracolOutfit,
@@ -239,6 +239,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS caracol_effects_owner_item_idx
   ON caracol_effects (scope, (COALESCE(account_id, '')), item_id);
 `;
 
+/**
+ * O `pg` devolve TIMESTAMPTZ como `Date`. `new Date(String(date))` passa pelo
+ * `toString()`, que não tem milissegundos, e o valor voltava arredondado.
+ */
+function timestampFromValue(value: unknown): number {
+  return value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+}
+
 function accountFromRow(row: Record<string, unknown>): CaracolAccountRecord {
   return {
     id: String(row.id),
@@ -255,11 +263,11 @@ function accountFromRow(row: Record<string, unknown>): CaracolAccountRecord {
     speedDiscountLevel: Number(row.speed_discount_level),
     cosmeticOwnedItemIds: Array.isArray(row.cosmetic_owned_item_ids) ? row.cosmetic_owned_item_ids.map(String) : [],
     cosmeticOutfit: outfitFromValue(row.cosmetic_outfit),
-    lastCoinAccruedAt: new Date(String(row.last_coin_accrued_at)).getTime(),
-    lastRouletteAt: row.last_roulette_at == null ? null : new Date(String(row.last_roulette_at)).getTime(),
+    lastCoinAccruedAt: timestampFromValue(row.last_coin_accrued_at),
+    lastRouletteAt: row.last_roulette_at == null ? null : timestampFromValue(row.last_roulette_at),
     lastRouletteItemId: rouletteItemIdFromValue(row.last_roulette_item_id),
-    createdAt: new Date(String(row.created_at)).getTime(),
-    updatedAt: new Date(String(row.updated_at)).getTime(),
+    createdAt: timestampFromValue(row.created_at),
+    updatedAt: timestampFromValue(row.updated_at),
   };
 }
 
@@ -272,7 +280,7 @@ function worldFromRow(row: Record<string, unknown>): CaracolWorldRecord {
     targetAccountId: row.target_account_id === null ? null : String(row.target_account_id),
     snailCosmeticOwnedItemIds: Array.isArray(row.snail_cosmetic_owned_item_ids) ? row.snail_cosmetic_owned_item_ids.map(String) : [],
     snailCosmeticOutfit: outfitFromValue(row.snail_cosmetic_outfit),
-    lastTickAt: new Date(String(row.last_tick_at)).getTime(),
+    lastTickAt: timestampFromValue(row.last_tick_at),
   };
 }
 
@@ -294,7 +302,7 @@ function historyFromRow(row: Record<string, unknown>): CaracolHistoryRecord {
     actorNickname: row.actor_nickname === null ? null : String(row.actor_nickname),
     targetNickname: row.target_nickname === null ? null : String(row.target_nickname),
     amount: row.amount === null ? null : Number(row.amount),
-    createdAt: new Date(String(row.created_at)).getTime(),
+    createdAt: timestampFromValue(row.created_at),
   };
 }
 
@@ -307,8 +315,8 @@ function effectFromRow(row: Record<string, unknown>): CaracolEffectRecord | null
     scope: row.scope === 'world' ? 'world' : 'account',
     accountId: row.account_id === null ? null : String(row.account_id),
     itemId,
-    createdAt: new Date(String(row.created_at)).getTime(),
-    expiresAt: new Date(String(row.expires_at)).getTime(),
+    createdAt: timestampFromValue(row.created_at),
+    expiresAt: timestampFromValue(row.expires_at),
     charges: row.charges === null ? null : Number(row.charges),
   };
 }
@@ -320,7 +328,7 @@ function pushFromRow(row: Record<string, unknown>): CaracolPushRecord {
     p256dh: String(row.p256dh),
     auth: String(row.auth),
     expirationTime: row.expiration_time === null ? null : Number(row.expiration_time),
-    updatedAt: new Date(String(row.updated_at)).getTime(),
+    updatedAt: timestampFromValue(row.updated_at),
   };
 }
 
@@ -489,10 +497,32 @@ export class PgCaracolStore implements CaracolStore {
     await this.writeWorld(this.pool, world);
   }
 
-  async commit(changes: CaracolCommit): Promise<void> {
+  /**
+   * Roda `work` entre BEGIN e COMMIT. Se o ROLLBACK também falhar, o erro que
+   * sobe continua sendo o original, e o client sai do pool em vez de voltar
+   * com a transação aberta para a próxima consulta.
+   */
+  private async transaction(work: (client: PoolClient) => Promise<void>): Promise<void> {
     const client = await this.pool.connect();
+    let brokenConnection: Error | undefined;
     try {
       await client.query('BEGIN');
+      await work(client);
+      await client.query('COMMIT');
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        brokenConnection = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      }
+      throw error;
+    } finally {
+      client.release(brokenConnection);
+    }
+  }
+
+  async commit(changes: CaracolCommit): Promise<void> {
+    await this.transaction(async (client) => {
       for (const account of changes.accounts ?? []) await this.writeAccount(client, account);
       if (changes.world) await this.writeWorld(client, changes.world);
       for (const effect of changes.upsertEffects ?? []) {
@@ -507,13 +537,7 @@ export class PgCaracolStore implements CaracolStore {
       if (changes.deleteEffectIds?.length) {
         await client.query('DELETE FROM caracol_effects WHERE id = ANY($1::TEXT[])', [changes.deleteEffectIds]);
       }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   private async writeAccount(db: Pick<Pool, 'query'>, account: CaracolAccountRecord): Promise<void> {
@@ -541,9 +565,7 @@ export class PgCaracolStore implements CaracolStore {
   }
 
   async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    await this.transaction(async (client) => {
       await client.query(
         `UPDATE caracol_accounts SET
           coins = $2, cosmetic_owned_item_ids = $3, cosmetic_outfit = $4, updated_at = NOW()
@@ -558,13 +580,7 @@ export class PgCaracolStore implements CaracolStore {
           [WORLD_ID, world.snailCosmeticOwnedItemIds, JSON.stringify(world.snailCosmeticOutfit)],
         );
       }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   async appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord> {

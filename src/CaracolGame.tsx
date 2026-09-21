@@ -40,6 +40,7 @@ interface GeoFeatureCollection {
 const MAX_PASSWORD_LENGTH = 72;
 const CARACOL_SESSION_KEY = 'caracol:session-token';
 const MAP_BOUNDS = { minLon: -74, maxLon: -34, minLat: -34, maxLat: 6 };
+const ROULETTE_ACK_TIMEOUT_MS = 10_000;
 
 export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -141,6 +142,9 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
     };
     const onNotice = (payload: { message: string; code: string }): void => {
       setNotice(payload.message);
+      // O giro de outra pessoa é notícia do mapa, não resposta a uma ação sua:
+      // fica no aviso de cima e no histórico, sem apagar o que o painel dizia.
+      if (payload.code === 'roulette') return;
       if (payload.code === 'death') setFeedback({ tone: 'error', message: payload.message });
       else setFeedback({ tone: 'neutral', message: payload.message });
     };
@@ -348,8 +352,14 @@ export function CaracolGame({ onExit }: CaracolGameProps): JSX.Element {
   function spinRoulette(): void {
     if (!caracolSocket.connected || spinning) return;
     setSpinning(true);
-    caracolSocket.emit('caracol:roulette', (result) => {
+    // Se a conexão cair antes da resposta, o Socket.IO nunca chama o ack; sem o
+    // prazo, o botão ficaria em "Girando…" até recarregar a página.
+    caracolSocket.timeout(ROULETTE_ACK_TIMEOUT_MS).emit('caracol:roulette', (timedOut, result) => {
       setSpinning(false);
+      if (timedOut) {
+        setFeedback({ tone: 'error', message: 'A roleta não respondeu. Se o giro valeu, ele aparece quando o mapa sincronizar.' });
+        return;
+      }
       if (result.ok) {
         setState(result.state);
         setLastSyncedAt(Date.now());

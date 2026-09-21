@@ -55,7 +55,6 @@ import {
   caracolEffectId,
   createCaracolStore,
   type CaracolAccountRecord,
-  type CaracolCommit,
   type CaracolEffectRecord,
   type CaracolPushRecord,
   type CaracolStore,
@@ -80,10 +79,25 @@ interface CaracolManagerOptions {
   autoTick?: boolean;
 }
 
-/** O que um item sorteado faz na conta: aplicado primeiro ao rascunho gravado, depois à memória. */
+/**
+ * Mudança numa conta, aplicada duas vezes: no rascunho gravado e, depois do
+ * commit, na memória. Escrita como delta (`coins -= x`), e não recalculada da
+ * base, para não apagar moedas que o tick pagar durante o `await`.
+ */
+type AccountChange = (account: CaracolAccountRecord) => void;
+
+/** O que uma ação grava de uma vez só; `commitPlan` grava e só então muda a memória. */
+interface CommitPlan {
+  accounts?: Array<[RuntimeAccount, AccountChange]>;
+  world?: (world: CaracolWorldRecord) => void;
+  upsertEffects?: CaracolEffectRecord[];
+  deleteEffectIds?: string[];
+}
+
+/** O que um item sorteado faz na conta. */
 interface RouletteOutcome {
   effect: CaracolEffectRecord | null;
-  apply: (account: CaracolAccountRecord) => void;
+  apply: AccountChange;
   detail: string;
   amount: number | null;
 }
@@ -112,7 +126,7 @@ export class CaracolGameManager {
   private world!: CaracolWorldRecord;
   private tickTimer: NodeJS.Timeout | null = null;
   private tickInFlight = false;
-  private shopMutationQueue: Promise<void> = Promise.resolve();
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly io: CaracolIo, options: CaracolManagerOptions = {}) {
     this.store = options.store ?? createCaracolStore();
@@ -152,16 +166,18 @@ export class CaracolGameManager {
     socket.on('caracol:login', (payload, ack) => { void this.afterReady(() => this.login(socket, payload, ack)); });
     socket.on('caracol:resume', (payload, ack) => { void this.afterReady(() => this.resume(socket, payload, ack)); });
     socket.on('caracol:sync', (ack) => { void this.afterReady(() => this.sync(socket, ack)); });
-    socket.on('caracol:select-city', (payload, ack) => { void this.afterReady(() => this.selectCity(socket, payload, ack)); });
-    socket.on('caracol:redirect', (payload, ack) => { void this.afterReady(() => this.redirect(socket, payload, ack)); });
-    socket.on('caracol:buy-speed', (ack) => { void this.afterReady(() => this.buySpeed(socket, ack)); });
-    socket.on('caracol:buy-discount', (ack) => { void this.afterReady(() => this.buyDiscount(socket, ack)); });
-    socket.on('caracol:shop-purchase', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopPurchase(socket, payload, ack))); });
-    socket.on('caracol:shop-equip', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.shopEquip(socket, payload, ack))); });
-    // Roleta e bumerangue usam a mesma fila da loja: dois cliques rápidos não
-    // passam juntos pelo "já faz 24h?" nem gastam a mesma carga duas vezes.
-    socket.on('caracol:roulette', (ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.roulette(socket, ack))); });
-    socket.on('caracol:boomerang', (payload, ack) => { void this.afterReady(() => this.enqueueShopMutation(() => this.boomerang(socket, payload, ack))); });
+    // Tudo que gasta moeda ou carga passa pela mesma fila. Essas ações conferem
+    // o saldo, gravam (`await`) e só então mudam a memória; fora da fila, dois
+    // cliques rápidos passariam juntos pela conferência e gastariam duas vezes.
+    // O tick fica fora: ele só paga moedas e mata, e o `commitPlan` lida com isso.
+    socket.on('caracol:select-city', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.selectCity(socket, payload, ack))); });
+    socket.on('caracol:redirect', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.redirect(socket, payload, ack))); });
+    socket.on('caracol:buy-speed', (ack) => { void this.afterReady(() => this.enqueueMutation(() => this.buySpeed(socket, ack))); });
+    socket.on('caracol:buy-discount', (ack) => { void this.afterReady(() => this.enqueueMutation(() => this.buyDiscount(socket, ack))); });
+    socket.on('caracol:shop-purchase', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.shopPurchase(socket, payload, ack))); });
+    socket.on('caracol:shop-equip', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.shopEquip(socket, payload, ack))); });
+    socket.on('caracol:roulette', (ack) => { void this.afterReady(() => this.enqueueMutation(() => this.roulette(socket, ack))); });
+    socket.on('caracol:boomerang', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.boomerang(socket, payload, ack))); });
     socket.on('caracol:visibility', (payload) => { void this.afterReady(() => this.setVisibility(socket, payload)); });
     socket.on('caracol:push-subscribe', (payload, ack) => { void this.afterReady(() => this.subscribePush(socket, payload, ack)); });
     socket.on('caracol:push-unsubscribe', (payload, ack) => { void this.afterReady(() => this.unsubscribePush(socket, payload, ack)); });
@@ -327,15 +343,21 @@ export class CaracolGameManager {
       ack(this.failure('CITY_NOT_FOUND', 'Escolha uma cidade válida do mapa.'));
       return;
     }
-    const changes: CaracolCommit = { accounts: [account] };
-    if (mushroom) {
-      this.spendCharge(mushroom, changes);
-    } else {
-      account.alive = true;
-      account.lastCoinAccruedAt = this.clock();
-    }
-    this.setAccountCity(account, city);
-    await this.store.commit(changes);
+    const now = this.clock();
+    const plan: CommitPlan = {
+      accounts: [[account, (target) => {
+        if (!mushroom) {
+          target.alive = true;
+          target.lastCoinAccruedAt = now;
+        }
+        this.setAccountCity(target, city);
+      }]],
+    };
+    if (mushroom) this.spendCharge(mushroom, plan);
+    if (!(await this.commitPlan(plan, ack))) return;
+    // Quem se muda vivo continua sendo o alvo, então o alvo não "muda" e nada
+    // limpa a flag sozinho: sem isto, o aviso da cidade nova nunca sairia.
+    if (mushroom) this.approachingSent.delete(account.id);
     await this.recordHistory({
       type: 'city',
       message: mushroom
@@ -382,12 +404,11 @@ export class CaracolGameManager {
       ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${cost} moedas para redirecionar o caracol.`));
       return;
     }
-    const changes: CaracolCommit = { accounts: [account] };
-    account.coins -= cost;
-    if (fireFlower) this.spendCharge(fireFlower, changes);
+    const plan: CommitPlan = { accounts: [[account, (payer) => { payer.coins = Math.max(0, payer.coins - cost); }]] };
+    if (fireFlower) this.spendCharge(fireFlower, plan);
     const shield = this.activeEffect(target.id, 'shield', now);
     if (shield) {
-      await this.absorbAttack(account, target, shield, changes, {
+      await this.absorbAttack(account, target, shield, plan, ack, {
         type: 'redirect',
         message: `${account.nickname} tentou mandar o caracol atrás de ${target.nickname}, mas bateu no Casco defensivo${cost > 0 ? ` e perdeu ${cost} moedas` : ''}.`,
         actorNickname: account.nickname,
@@ -395,16 +416,15 @@ export class CaracolGameManager {
         amount: cost,
         createdAt: now,
       });
-      ack({ ok: true, state: this.stateFor(account) });
-      this.broadcastState();
       return;
     }
-    this.world.targetAccountId = target.id;
-    // A Flor de Fogo redireciona sem encarecer o próximo redirecionamento do mundo.
-    if (!fireFlower) this.world.redirectLevel += 1;
+    plan.world = (world) => {
+      world.targetAccountId = target.id;
+      // A Flor de Fogo redireciona sem encarecer o próximo redirecionamento do mundo.
+      if (!fireFlower) world.redirectLevel += 1;
+    };
+    if (!(await this.commitPlan(plan, ack))) return;
     this.approachingSent.clear();
-    changes.world = this.world;
-    await this.store.commit(changes);
     await this.recordHistory({
       type: 'redirect',
       message: fireFlower
@@ -483,9 +503,9 @@ export class CaracolGameManager {
     this.broadcastState();
   }
 
-  private enqueueShopMutation(work: () => Promise<void>): Promise<void> {
-    const next = this.shopMutationQueue.then(work, work);
-    this.shopMutationQueue = next.catch(() => undefined);
+  private enqueueMutation(work: () => Promise<void>): Promise<void> {
+    const next = this.mutationQueue.then(work, work);
+    this.mutationQueue = next.catch(() => undefined);
     return next;
   }
 
@@ -571,28 +591,31 @@ export class CaracolGameManager {
       return;
     }
 
-    let outcome: RouletteOutcome;
-    let item: CaracolRouletteItem;
+    // A memória só muda depois que o banco confirmou: se a gravação falhar, o
+    // jogador não vê um item que sumiria no próximo reinício e o giro continua
+    // disponível.
+    const failed = this.failure('ROULETTE_FAILED', 'Não consegui girar a roleta agora. Seu giro continua disponível.');
     try {
       await this.settleCoins(account);
-      item = this.drawRouletteItem();
-      outcome = this.rouletteOutcome(account, item, now);
-      // A memória só muda depois que o banco confirmou: se a gravação falhar,
-      // o jogador não vê um item que sumiria no próximo reinício e o giro
-      // continua disponível.
-      const draft: CaracolAccountRecord = { ...account, lastRouletteAt: now, lastRouletteItemId: item.id };
-      outcome.apply(draft);
-      await this.store.commit({ accounts: [draft], upsertEffects: outcome.effect ? [outcome.effect] : [] });
     } catch (error) {
       console.error('[caracol] giro da roleta falhou', error);
-      ack(this.failure('ROULETTE_FAILED', 'Não consegui girar a roleta agora. Seu giro continua disponível.'));
+      ack(failed);
       return;
     }
-
-    account.lastRouletteAt = now;
-    account.lastRouletteItemId = item.id;
-    outcome.apply(account);
-    if (outcome.effect) this.effects.set(outcome.effect.id, outcome.effect);
+    const item = this.drawRouletteItem();
+    const outcome = this.rouletteOutcome(account, item, now);
+    const committed = await this.commitPlan({
+      accounts: [[account, (target) => {
+        target.lastRouletteAt = now;
+        target.lastRouletteItemId = item.id;
+        outcome.apply(target);
+      }]],
+      upsertEffects: outcome.effect ? [outcome.effect] : [],
+    }, ack, failed);
+    if (!committed) return;
+    // O Bullet Bill muda a cidade sem mudar o alvo: o aviso de aproximação
+    // precisa valer de novo para a cidade nova.
+    if (item.id === 'bullet-bill') this.approachingSent.delete(account.id);
 
     try {
       await this.recordHistory({
@@ -636,11 +659,11 @@ export class CaracolGameManager {
     // Saldo só muda sobre número atualizado: paga o pendente dos dois antes.
     await this.settleCoins(account);
     await this.settleCoins(target);
-    const changes: CaracolCommit = { accounts: [account, target] };
-    this.spendCharge(charge, changes);
+    const plan: CommitPlan = {};
+    this.spendCharge(charge, plan);
     const shield = this.activeEffect(target.id, 'shield', now);
     if (shield) {
-      await this.absorbAttack(account, target, shield, changes, {
+      await this.absorbAttack(account, target, shield, plan, ack, {
         type: 'roulette',
         message: `${account.nickname} lançou o Bumerangue em ${target.nickname}, mas ele bateu no Casco defensivo.`,
         actorNickname: account.nickname,
@@ -648,15 +671,15 @@ export class CaracolGameManager {
         amount: 0,
         createdAt: now,
       });
-      ack({ ok: true, state: this.stateFor(account) });
-      this.broadcastState();
       return;
     }
     // floor(saldo × 0,2) em aritmética inteira, sem erro de ponto flutuante.
     const amount = Math.floor(target.coins / BOOMERANG_SHARE_DIVISOR);
-    target.coins -= amount;
-    account.coins += amount;
-    await this.store.commit(changes);
+    plan.accounts = [
+      [target, (victim) => { victim.coins = Math.max(0, victim.coins - amount); }],
+      [account, (thrower) => { thrower.coins += amount; }],
+    ];
+    if (!(await this.commitPlan(plan, ack))) return;
     await this.recordHistory({
       type: 'roulette',
       message: `${account.nickname} lançou o Bumerangue em ${target.nickname} e trouxe ${amount} moeda${amount === 1 ? '' : 's'}.`,
@@ -665,7 +688,7 @@ export class CaracolGameManager {
       amount,
       createdAt: now,
     });
-    this.noticeAccount(target, 'roulette', `${account.nickname} acertou você com o Bumerangue e levou ${amount} moeda${amount === 1 ? '' : 's'}.`);
+    this.noticeAccount(target, 'boomerang', `${account.nickname} acertou você com o Bumerangue e levou ${amount} moeda${amount === 1 ? '' : 's'}.`);
     ack({ ok: true, state: this.stateFor(account) });
     this.broadcastState();
   }
@@ -679,14 +702,59 @@ export class CaracolGameManager {
     attacker: RuntimeAccount,
     target: RuntimeAccount,
     shield: CaracolEffectRecord,
-    changes: CaracolCommit,
+    plan: CommitPlan,
+    ack: (result: CaracolActionResult) => void,
     history: Omit<CaracolHistoryRecord, 'id'>,
   ): Promise<void> {
-    this.spendCharge(shield, changes);
-    await this.store.commit(changes);
+    this.spendCharge(shield, plan);
+    if (!(await this.commitPlan(plan, ack))) return;
     await this.recordHistory(history);
     this.noticeAccount(attacker, 'shield', `${target.nickname} tinha um Casco defensivo. Seu ataque foi bloqueado.`);
     this.noticeAccount(target, 'shield', `Seu Casco defensivo bloqueou um ataque de ${attacker.nickname}.`);
+    ack({ ok: true, state: this.stateFor(attacker) });
+    this.broadcastState();
+  }
+
+  /**
+   * Grava primeiro e só depois muda a memória, como o giro da roleta: se o
+   * banco recusar, memória e banco continuam iguais e o jogador recebe a falha
+   * em vez de ficar sem resposta. Quem chama precisa estar na fila de mutações,
+   * porque agora existe um `await` entre conferir o saldo e gastar.
+   */
+  private async commitPlan(
+    plan: CommitPlan,
+    ack: (result: CaracolActionFailure) => void,
+    failure = this.failure('SAVE_FAILED', 'Não consegui gravar sua ação agora. Nada mudou; tente de novo.'),
+  ): Promise<boolean> {
+    const accounts = plan.accounts ?? [];
+    const drafts = accounts.map(([account, change]) => {
+      const draft: CaracolAccountRecord = { ...account };
+      change(draft);
+      return draft;
+    });
+    const world = plan.world ? { ...this.world } : undefined;
+    if (world) plan.world!(world);
+    try {
+      await this.store.commit({ accounts: drafts, world, upsertEffects: plan.upsertEffects, deleteEffectIds: plan.deleteEffectIds });
+    } catch (error) {
+      console.error('[caracol] gravação falhou; a memória não mudou', error);
+      ack(failure);
+      return false;
+    }
+
+    for (const [index, [account, change]] of accounts.entries()) {
+      change(account);
+      // O tick não passa pela fila. Se ele pagou moedas ou matou a conta durante
+      // o `await`, o rascunho gravado ficou para trás: grava a memória de novo.
+      const draft = drafts[index]!;
+      const touched = account.coins !== draft.coins || account.alive !== draft.alive
+        || account.lastCoinAccruedAt !== draft.lastCoinAccruedAt || account.speedDiscountLevel !== draft.speedDiscountLevel;
+      if (touched) await this.store.saveAccount(account).catch((error: unknown) => console.error('[caracol] conta não regravada depois do tick', error));
+    }
+    plan.world?.(this.world);
+    for (const effect of plan.upsertEffects ?? []) this.effects.set(effect.id, { ...effect });
+    for (const effectId of plan.deleteEffectIds ?? []) this.effects.delete(effectId);
+    return true;
   }
 
   private drawRouletteItem(): CaracolRouletteItem {
@@ -711,7 +779,8 @@ export class CaracolGameManager {
       const lost = account.coins - Math.floor(account.coins / 2);
       return {
         effect,
-        apply: (target) => { target.coins = Math.floor(target.coins / 2); },
+        // Delta sobre o saldo liquidado: banco, memória e o "perdeu X" do histórico batem.
+        apply: (target) => { target.coins = Math.max(0, target.coins - lost); },
         detail: `: perdeu ${lost} moeda${lost === 1 ? '' : 's'}`,
         amount: lost,
       };
@@ -770,16 +839,14 @@ export class CaracolGameManager {
     return { itemId: effect.itemId, expiresAt: effect.expiresAt, charges: effect.charges };
   }
 
-  /** Gasta uma carga na memória e anota a gravação; a última carga remove o efeito. */
-  private spendCharge(effect: CaracolEffectRecord, changes: CaracolCommit): void {
+  /** Anota no plano o gasto de uma carga; a última carga remove o efeito. A memória só muda no commit. */
+  private spendCharge(effect: CaracolEffectRecord, plan: CommitPlan): void {
     const remaining = (effect.charges ?? 1) - 1;
     if (remaining <= 0) {
-      this.effects.delete(effect.id);
-      changes.deleteEffectIds = [...(changes.deleteEffectIds ?? []), effect.id];
+      plan.deleteEffectIds = [...(plan.deleteEffectIds ?? []), effect.id];
       return;
     }
-    effect.charges = remaining;
-    changes.upsertEffects = [...(changes.upsertEffects ?? []), { ...effect }];
+    plan.upsertEffects = [...(plan.upsertEffects ?? []), { ...effect, charges: remaining }];
   }
 
   /** O Congelamento trava tudo que gasta ou ataca; vestir e escolher cidade seguem livres. */
