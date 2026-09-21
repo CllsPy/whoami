@@ -45,6 +45,7 @@ const players = [
 describe('cartão de jogadores', () => {
   it('conta as pessoas no título, no singular e no plural', () => {
     expect(card([player('Ana', { isYou: true })])).toContain('<h2>1 pessoa</h2>');
+    expect(card([player('Ana', { isYou: true })]).match(/class="caracol-avatar"/g)).toHaveLength(1);
     expect(card(players)).toContain('<h2>4 pessoas</h2>');
   });
 

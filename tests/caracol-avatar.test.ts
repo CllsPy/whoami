@@ -116,6 +116,13 @@ describe('CaracolFigure', () => {
     expect(new Set(idList).size).toBe(idList.length);
   });
 
+  it('veste o jogador sem peças com camisa céu e calça jeans', () => {
+    const markup = figure({ outfit: emptyCaracolOutfit(), crop: 'full' });
+    const layer = (key: string): string => markup.slice(markup.indexOf(`data-layer="${key}"`)).split('data-layer=')[1]!;
+    expect(layer('shirt-default')).toContain('fill="#75d9e9"');
+    expect(layer('pants-default')).toContain('fill="#4d628f"');
+  });
+
   it('esconde o desenho dos leitores de tela', () => {
     expect(figure()).toMatch(/^<svg[^>]* aria-hidden="true"/);
   });
