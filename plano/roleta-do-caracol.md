@@ -390,7 +390,7 @@ Se alguém clicar duas vezes no botão bem rápido, os dois pedidos chegam antes
 Os dois passam pelo teste de "faz 24h?".
 Dois itens de uma vez.
 
-A loja já tinha esse problema e foi resolvida com uma fila (`enqueueShopMutation` no `game.ts`).
+A loja já tinha esse problema e foi resolvida com uma fila (hoje `enqueueMutation` no `game.ts`).
 Use a mesma fila para a roleta.
 
 ### O sorteio

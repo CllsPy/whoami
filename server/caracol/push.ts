@@ -2,6 +2,9 @@ import webpush from 'web-push';
 import type { CaracolNoticePayload } from '../../shared/caracol';
 import type { CaracolPushRecord } from './store';
 
+/** Sem prazo, o `web-push` espera o TCP desistir, o que leva minutos num endpoint pendurado. */
+const PUSH_TIMEOUT_MS = 5_000;
+
 export interface CaracolPushPayload {
   title: string;
   body: string;
@@ -43,6 +46,7 @@ export class CaracolPushService {
             keys: { p256dh: subscription.p256dh, auth: subscription.auth },
           },
           JSON.stringify(payload),
+          { timeout: PUSH_TIMEOUT_MS },
         );
       } catch (error) {
         const statusCode = error && typeof error === 'object' && 'statusCode' in error ? Number(error.statusCode) : null;

@@ -55,7 +55,7 @@ Onde esta spec e o design doc divergirem, vale esta spec.
 | O que o Blooper esconde | Posição, distância e ETA do caracol. O nome do alvo continua visível | O alvo já aparece na lista de jogadores; esconder só no cartão seria incoerente. | n |
 | Frase do cartão sem alvo | "Dormindo em Brasília" só quando o caracol está em Brasília; fora dela, "Sem alvo no mapa" | Hoje a frase mente depois de toda morte, porque o caracol fica onde alcançou a pessoa. | n |
 | Expiração | Derivada de `expiresAt` comparado ao relógio, nunca um timer agendado | Mesmo princípio registrado no handoff de `powerup-de-dica`: estado de tempo é derivado. | y |
-| Serialização | Giro e bumerangue passam pela fila já usada pela loja (`enqueueShopMutation`) | A fila é global e já resolve a corrida de checar e depois gravar. | y |
+| Serialização | Giro e bumerangue passam pela fila já usada pela loja (`enqueueMutation`, que depois passou a cobrir toda ação que gasta moeda ou carga) | A fila é global e já resolve a corrida de checar e depois gravar. | y |
 | Sorteio injetável | `CaracolManagerOptions.random`, padrão `Math.random` | Igual ao `clock` já injetado. Sem isso a feature é intestável. | y |
 | Testes de integração | Preferir o manager com `clock`, `random` e `tickOnce()` a sockets reais quando o comportamento não depende do transporte | O handoff registra flake intermitente de timeout de socket em `tests/game.integration.test.ts`. | n |
 
@@ -232,7 +232,7 @@ Onde esta spec e o design doc divergirem, vale esta spec.
 | Concurrency / ordering | ROL-07 e a premissa de serialização pela fila da loja. |
 | Data lifecycle / expiry | EFX-03 a EFX-06, PER-01 a PER-03. |
 | Observability | ROL-10 grava histórico de todo giro. Falhas seguem o `console.error` existente em `afterReady`. Nada além disso: N/A because o Caracol não tem métricas nem tracing hoje. |
-| External-dependency failure | ROL-11 cobre o PostgreSQL. Push: N/A because a roleta não envia push. |
+| External-dependency failure | ROL-11 cobre o PostgreSQL. Push: a roleta não envia push próprio, mas ações da fila de mutações (redirect, troca de cidade, giro) disparam os avisos existentes de alvo, aproximação e morte. O push sai sem ser esperado e com prazo de 5 s, para que um endpoint lento ou pendurado não trave a fila de todos. |
 | State-transition integrity | ROL-05, EFX-07, EFX-16, EFX-31, EFX-34. |
 
 ---
