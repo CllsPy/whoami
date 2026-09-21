@@ -7,6 +7,14 @@ import { describe, expect, it } from 'vitest';
 const SRC = new URL('../src/', import.meta.url);
 const STYLES = readFileSync(new URL('styles.css', SRC), 'utf8');
 
+/** As declarações da regra com exatamente este seletor. */
+function rule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`).exec(STYLES);
+  if (!match) throw new Error(`regra ${selector} não encontrada`);
+  return match[1]!;
+}
+
 function componentSources(): { file: string; text: string }[] {
   return (readdirSync(SRC, { recursive: true }) as string[])
     .filter((file) => /\.tsx?$/.test(file))
@@ -42,5 +50,30 @@ describe('guarda do novo design', () => {
   it('não pinta todo <circle> dos tokens, que repintaria olhos, lentes e mostradores', () => {
     expect(STYLES).not.toMatch(/\.(map-player|snail-token)[^{}]*\bcircle\s*[{,]/);
     for (const tone of ['you', 'target', 'dead']) expect(STYLES).toContain(`.map-medallion-ring.tone-${tone}`);
+  });
+
+  it('recorta o medalhão em círculo com fundo #fffdf8 (ARTE-08)', () => {
+    const medallion = rule('.caracol-medallion');
+    expect(medallion).toContain('border-radius: 50%');
+    expect(medallion).toContain('overflow: hidden');
+    expect(medallion).toContain('background: #fffdf8');
+  });
+
+  it('põe em cinza só o retrato de quem morreu; sem saldo continua em cor (LISTA-03)', () => {
+    const dead = rule('.caracol-medallion.tone-dead');
+    expect(dead).toContain('filter: grayscale(1)');
+    expect(dead).toContain('opacity: 0.55');
+    for (const tone of ['default', 'you', 'target', 'equipped', 'unaffordable']) {
+      const other = STYLES.match(new RegExp(`\\.caracol-medallion\\.tone-${tone} \\{[^}]*\\}`, 'g')) ?? [];
+      for (const declarations of other) expect(declarations, tone).not.toMatch(/grayscale|opacity/);
+    }
+    expect(STYLES.match(/grayscale/g)).toHaveLength(1);
+  });
+
+  it('pinta o anel do mapa de céu, ácido para você, coral para o alvo e cinza para quem morreu (MAPA-01, MAPA-03)', () => {
+    expect(rule('.map-medallion-ring')).toContain('stroke: var(--sky)');
+    expect(rule('.map-medallion-ring.tone-you')).toContain('stroke: var(--acid)');
+    expect(rule('.map-medallion-ring.tone-target')).toContain('stroke: var(--coral)');
+    expect(rule('.map-medallion-ring.tone-dead')).toContain('stroke: #8b8498');
   });
 });
