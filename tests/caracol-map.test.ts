@@ -92,6 +92,14 @@ describe('mapa do Brasil', () => {
     expect(markup).not.toContain('snail-route');
   });
 
+  it('esconde o caracol e a rota quando falta só a latitude ou só a longitude (MAPA-04)', () => {
+    for (const snail of [{ lat: null, lon: -47.93 }, { lat: -15.78, lon: null }]) {
+      const markup = map(mapState({ snail }));
+      expect(markup, JSON.stringify(snail)).not.toContain('snail-token');
+      expect(markup, JSON.stringify(snail)).not.toContain('snail-route');
+    }
+  });
+
   it('escreve o nick só de você, do alvo e de quem morreu', () => {
     const labels = Array.from(map().matchAll(/<text[^>]*>([^<]+)<\/text>/g), (match) => match[1]);
     expect(labels.sort()).toEqual(['Ana', 'Bia', 'Caio']);
