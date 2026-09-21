@@ -76,4 +76,12 @@ describe('guarda do novo design', () => {
     expect(rule('.map-medallion-ring.tone-target')).toContain('stroke: var(--coral)');
     expect(rule('.map-medallion-ring.tone-dead')).toContain('stroke: #8b8498');
   });
+
+  it('usa o medalhão no bolso, no cartão do caracol, na legenda e na lista da tela do jogo (ARTE-14)', () => {
+    const game = readFileSync(new URL('CaracolGame.tsx', SRC), 'utf8');
+    expect(game).toMatch(/className="caracol-wallet paper-card"><CaracolMedallion wearer="player" outfit=\{state\.shop\.player\.outfit\} size=\{64\}/);
+    expect(game).toMatch(/O bicho<\/span>.*<CaracolMedallion wearer="snail" outfit=\{state\.world\.snail\.outfit\} size=\{72\}/);
+    expect(game).toContain('<CaracolMapLegend snailOutfit={state.world.snail.outfit} />');
+    expect(game).toContain('<CaracolPlayersCard players={state.players} targetAccountId={state.world.snail.targetAccountId} />');
+  });
 });

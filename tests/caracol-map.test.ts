@@ -146,4 +146,12 @@ describe('retratos no mapa', () => {
     const dead = legend.slice(0, legend.indexOf(' mortos</span>'));
     expect(dead.slice(dead.lastIndexOf('<span>'))).toMatch(/<svg class="legend-ring"[^>]*aria-hidden="true"><circle[^>]* class="map-medallion-ring tone-dead"[^>]* stroke-dasharray="2 2"/);
   });
+
+  it('mostra o caracol vestido na legenda num medalhão de 24 px (ARTE-14)', () => {
+    const legend = renderToStaticMarkup(createElement(CaracolMapLegend, { snailOutfit: { ...emptyCaracolOutfit(), cap: 'cap-flat' } }));
+    const snail = legend.slice(legend.indexOf('<span class="legend-snail">'));
+    expect(snail).toMatch(/^<span class="legend-snail"><span class="caracol-avatar" role="img" aria-label="caracol vestido" style="--medallion-size:24px">/);
+    expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
+    expect(snail).toContain('data-layer="cap-flat"');
+  });
 });
