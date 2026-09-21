@@ -12,31 +12,6 @@ import { caracolShopItemTone } from './caracolArt/model';
 // A gaveta da loja fica fora de CaracolGame.tsx, que abre o socket no import,
 // para poder ser renderizada nos testes.
 
-export function CosmeticAvatar({ wearer, outfit, size, label }: { wearer: CaracolCosmeticWearer; outfit: CaracolOutfit; size: 'tiny' | 'small' | 'medium' | 'large'; label: string }): JSX.Element {
-  return <span className={`cosmetic-avatar cosmetic-avatar-${wearer} cosmetic-avatar-${size}`} role="img" aria-label={label}>
-    <span className="cosmetic-avatar-shadow" />
-    {wearer === 'snail' ? <>
-      <span className="cosmetic-snail-shell" />
-      <span className="cosmetic-snail-body" />
-      <span className="cosmetic-snail-eye cosmetic-snail-eye-left" />
-      <span className="cosmetic-snail-eye cosmetic-snail-eye-right" />
-      <span className="cosmetic-snail-antenna cosmetic-snail-antenna-left" />
-      <span className="cosmetic-snail-antenna cosmetic-snail-antenna-right" />
-    </> : <>
-      <span className="cosmetic-human-head" />
-      <span className={`cosmetic-layer cosmetic-shirt ${outfit.shirt ?? 'default'}`} />
-      <span className={`cosmetic-layer cosmetic-pants ${outfit.pants ?? 'default'}`} />
-    </>}
-    {wearer === 'snail' && <>
-      <span className={`cosmetic-layer cosmetic-shirt ${outfit.shirt ?? 'default'}`} />
-      <span className={`cosmetic-layer cosmetic-pants ${outfit.pants ?? 'default'}`} />
-    </>}
-    {outfit.watch && <span className={`cosmetic-layer cosmetic-watch ${outfit.watch}`} />}
-    {outfit.glasses && <span className={`cosmetic-layer cosmetic-glasses ${outfit.glasses}`} />}
-    {outfit.cap && <span className={`cosmetic-layer cosmetic-cap ${outfit.cap}`} />}
-  </span>;
-}
-
 export interface CaracolShopDrawerProps {
   state: CaracolStateView;
   open: boolean;
