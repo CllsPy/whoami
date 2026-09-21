@@ -6,6 +6,8 @@ import {
   type CaracolOutfit,
   type CaracolStateView,
 } from '../shared/caracol';
+import { CaracolMedallion } from './CaracolAvatar';
+import { caracolShopItemTone } from './caracolArt/model';
 
 // A gaveta da loja fica fora de CaracolGame.tsx, que abre o socket no import,
 // para poder ser renderizada nos testes.
@@ -75,7 +77,7 @@ export function CaracolShopDrawer({ state, open, tab, onTabChange, onClose, onPu
             const isEquipped = equipped === item.id;
             const previewOutfit: CaracolOutfit = { ...wardrobe.outfit, [slot]: item.id };
             return <article className={`caracol-shop-item ${isEquipped ? 'is-equipped' : ''}`} key={item.id}>
-              <div className="caracol-shop-item-preview"><CosmeticAvatar wearer={tab} outfit={previewOutfit} size="small" label={`${item.name} para ${tab === 'player' ? 'você' : 'o caracol'}`} /></div>
+              <div className="caracol-shop-item-preview"><CaracolMedallion wearer={tab} outfit={previewOutfit} crop={slot} size={88} tone={caracolShopItemTone({ owned, equipped: isEquipped, coins: state.you.coins, price: item.price })} label={`${item.name} para ${tab === 'player' ? 'você' : 'o caracol'}`} /></div>
               <div className="caracol-shop-item-copy"><strong>{item.name}</strong><span>{owned ? isEquipped ? 'Equipado' : 'Desbloqueado' : `${item.price} moedas`}</span></div>
               {isEquipped ? <button className="shop-item-button is-equipped" type="button" disabled>Equipado</button> : owned ? <button className="shop-item-button" type="button" onClick={() => onEquip(slot, item.id)}>Usar</button> : <button className="shop-item-button shop-item-buy" type="button" onClick={() => onPurchase(item.id)} disabled={state.you.coins < item.price}>Comprar <span>{item.price}</span></button>}
             </article>;

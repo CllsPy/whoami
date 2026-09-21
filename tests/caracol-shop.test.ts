@@ -7,6 +7,7 @@ import {
   type CaracolCosmeticWearer,
   type CaracolStateView,
 } from '../shared/caracol';
+import { caracolArtViewBox } from '../src/caracolArt/model';
 import { CaracolShopDrawer } from '../src/CaracolShop';
 
 // A loja vive fora de CaracolGame.tsx, que abre o socket no import. Os testes
@@ -66,6 +67,14 @@ function card(markup: string, name: string): string {
   return found.slice(0, found.indexOf('</article>'));
 }
 
+function layersOf(markup: string): string[] {
+  return Array.from(markup.matchAll(/data-layer="([^"]+)"/g), (match) => match[1]!);
+}
+
+function medallionTone(markup: string): string | undefined {
+  return /class="caracol-medallion tone-([\w-]+)"/.exec(markup)?.[1];
+}
+
 describe('gaveta da loja', () => {
   it('troca título e descrição com a aba (LOJA-05)', () => {
     const player = drawer('player');
@@ -90,5 +99,51 @@ describe('gaveta da loja', () => {
     const markup = drawer('player', state);
     expect(card(markup, 'Básica')).toMatch(/<button class="shop-item-button shop-item-buy" type="button">Comprar <span>25<\/span><\/button>/);
     expect(card(markup, 'Listrada')).toMatch(/<button class="shop-item-button shop-item-buy" type="button" disabled="">Comprar <span>50<\/span><\/button>/);
+  });
+});
+
+describe('cards da loja', () => {
+  for (const tab of ['player', 'snail'] as const) {
+    it(`${tab}: mostra cada peça no recorte do próprio slot (LOJA-01, LOJA-05)`, () => {
+      const markup = drawer(tab);
+      for (const item of CARACOL_COSMETIC_CATALOG) {
+        expect(card(markup, item.name), item.id).toContain(`viewBox="${caracolArtViewBox(tab, item.slot)}"`);
+      }
+    });
+  }
+
+  it('veste a peça do card por cima do que já está equipado nos outros slots (LOJA-01)', () => {
+    const markup = drawer('player');
+    const flat = layersOf(card(markup, 'Aba reta'));
+    expect(flat).toContain('cap-flat');
+    expect(flat).toContain('pants-jeans');
+    expect(flat).toContain('glasses-dark');
+    const cargo = layersOf(card(markup, 'Cargo'));
+    expect(cargo).toContain('pants-cargo');
+    expect(cargo).not.toContain('pants-jeans');
+    expect(cargo).toContain('glasses-dark');
+  });
+
+  it('marca a peça equipada com o tom equipped e o selo de check (LOJA-02)', () => {
+    const jeans = card(drawer('player', sampleState({ coins: 0 })), 'Jeans');
+    expect(medallionTone(jeans)).toBe('equipped');
+    expect(jeans).toContain('badge-check');
+  });
+
+  it('marca a peça não comprada acima do saldo como unaffordable (LOJA-03)', () => {
+    expect(medallionTone(card(drawer('player', sampleState({ coins: 40 })), 'Listrada'))).toBe('unaffordable');
+  });
+
+  it('usa o tom padrão nos demais casos (LOJA-04)', () => {
+    const markup = drawer('player', sampleState({ coins: 40 }));
+    expect(medallionTone(card(markup, 'Básica'))).toBe('default');
+    expect(medallionTone(card(markup, 'Cargo'))).toBe('default');
+    expect(card(markup, 'Cargo')).not.toContain('badge-check');
+  });
+
+  it('decide o saldo pelo preço que o servidor mandou, já com Moeda ou Raio', () => {
+    const state = sampleState({ coins: 40 });
+    state.shop.catalog = state.shop.catalog.map((item) => item.id === 'shirt-striped' ? { ...item, price: 25 } : item);
+    expect(medallionTone(card(drawer('player', state), 'Listrada'))).toBe('default');
   });
 });
