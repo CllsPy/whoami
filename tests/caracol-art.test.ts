@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CARACOL_COSMETIC_CATALOG } from '../shared/caracol';
+import { CARACOL_COSMETIC_CATALOG, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
 import {
   CARACOL_ART_ITEM_IDS,
   CARACOL_ART_PALETTE,
+  caracolArtLayers,
   caracolArtViewBox,
   type CaracolArtCrop,
 } from '../src/caracolArt/model';
@@ -77,5 +78,49 @@ describe('paleta', () => {
     expect(CARACOL_ART_PALETTE.skin).toBe('#c78261');
     expect(CARACOL_ART_PALETTE.shell).toBe('#d86b51');
     expect(CARACOL_ART_PALETTE.snailBody).toBe('#efb37d');
+  });
+});
+
+describe('camadas visíveis', () => {
+  const fullOutfit: CaracolOutfit = {
+    pants: 'pants-cargo',
+    shirt: 'shirt-striped',
+    watch: 'watch-gold',
+    glasses: 'glasses-dark',
+    cap: 'cap-bucket',
+  };
+
+  it('veste o jogador sem peças com camisa e calça padrão (ARTE-02)', () => {
+    expect(caracolArtLayers('player', emptyCaracolOutfit())).toEqual(['legs', 'pants-default', 'arms', 'shirt-default', 'head', 'fringe', 'eyes', 'mouth']);
+  });
+
+  it('não desenha peça nenhuma no caracol sem peças (ARTE-02)', () => {
+    expect(caracolArtLayers('snail', emptyCaracolOutfit())).toEqual(['body', 'stalks', 'head']);
+  });
+
+  it('empilha o jogador vestido na ordem do design, uma camada por slot', () => {
+    expect(caracolArtLayers('player', fullOutfit)).toEqual(['legs', 'pants-cargo', 'arms', 'shirt-striped', 'watch-gold', 'head', 'mouth', 'glasses-dark', 'cap-bucket']);
+  });
+
+  it('empilha o caracol vestido na ordem do design, uma camada por slot', () => {
+    expect(caracolArtLayers('snail', fullOutfit)).toEqual(['body', 'pants-cargo', 'shirt-striped', 'stalks', 'watch-gold', 'head', 'cap-bucket', 'glasses-dark']);
+  });
+
+  it('esconde a franja só quando há boné (ARTE-03)', () => {
+    expect(caracolArtLayers('player', { ...emptyCaracolOutfit(), cap: 'cap-flat' })).not.toContain('fringe');
+    expect(caracolArtLayers('player', { ...emptyCaracolOutfit(), cap: 'cap-flat' })).toContain('cap-flat');
+    expect(caracolArtLayers('player', emptyCaracolOutfit())).toContain('fringe');
+  });
+
+  it('esconde os olhos só quando há óculos, que desenham os próprios (ARTE-04)', () => {
+    expect(caracolArtLayers('player', { ...emptyCaracolOutfit(), glasses: 'glasses-round' })).not.toContain('eyes');
+    expect(caracolArtLayers('player', { ...emptyCaracolOutfit(), glasses: 'glasses-round' })).toContain('glasses-round');
+    expect(caracolArtLayers('player', emptyCaracolOutfit())).toContain('eyes');
+  });
+
+  it('trata id sem arte como slot vazio, sem lançar erro (ARTE-06)', () => {
+    const unknown: CaracolOutfit = { pants: 'pants-skirt', shirt: 'shirt-hawaii', watch: 'watch-smart', glasses: 'glasses-3d', cap: 'cap-beanie' };
+    expect(caracolArtLayers('player', unknown)).toEqual(['legs', 'pants-default', 'arms', 'shirt-default', 'head', 'fringe', 'eyes', 'mouth']);
+    expect(caracolArtLayers('snail', unknown)).toEqual(['body', 'stalks', 'head']);
   });
 });

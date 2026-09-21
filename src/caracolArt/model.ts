@@ -1,4 +1,4 @@
-import type { CaracolCosmeticSlot, CaracolCosmeticWearer } from '../../shared/caracol';
+import type { CaracolCosmeticSlot, CaracolCosmeticWearer, CaracolOutfit } from '../../shared/caracol';
 
 // Modelo da arte do Caracol: tudo que é dado e regra, sem JSX. Cada personagem
 // é desenhado uma vez em coordenadas fixas (jogador em 200 × 400, caracol em
@@ -55,6 +55,12 @@ export type CaracolArtItemId = typeof CARACOL_ART_ITEM_IDS[number];
 export type CaracolArtCrop = 'portrait' | 'full' | CaracolCosmeticSlot;
 export type CaracolArtBox = readonly [x: number, y: number, width: number, height: number];
 
+export type PlayerArtLayer =
+  | 'legs' | 'pants-default' | 'arms' | 'shirt-default' | 'head' | 'fringe' | 'eyes' | 'mouth'
+  | CaracolArtItemId;
+export type SnailArtLayer = 'body' | 'stalks' | 'head' | CaracolArtItemId;
+export type CaracolArtLayer = PlayerArtLayer | SnailArtLayer;
+
 export const CARACOL_ART_CROPS: Record<CaracolCosmeticWearer, Record<CaracolArtCrop, CaracolArtBox>> = {
   player: {
     full: [18, 14, 172, 372],
@@ -78,4 +84,31 @@ export const CARACOL_ART_CROPS: Record<CaracolCosmeticWearer, Record<CaracolArtC
 
 export function caracolArtViewBox(wearer: CaracolCosmeticWearer, crop: CaracolArtCrop): string {
   return CARACOL_ART_CROPS[wearer][crop].join(' ');
+}
+
+/**
+ * As camadas que o outfit mostra, de trás para frente. Id sem arte vale como
+ * slot vazio: o personagem aparece sem a peça em vez de quebrar a tela.
+ */
+export function caracolArtLayers(wearer: 'player', outfit: CaracolOutfit): PlayerArtLayer[];
+export function caracolArtLayers(wearer: 'snail', outfit: CaracolOutfit): SnailArtLayer[];
+export function caracolArtLayers(wearer: CaracolCosmeticWearer, outfit: CaracolOutfit): CaracolArtLayer[];
+export function caracolArtLayers(wearer: CaracolCosmeticWearer, outfit: CaracolOutfit): CaracolArtLayer[] {
+  const item = (slot: CaracolCosmeticSlot): CaracolArtItemId | null => {
+    const id = outfit[slot];
+    return id !== null && (CARACOL_ART_ITEM_IDS as readonly string[]).includes(id) ? id as CaracolArtItemId : null;
+  };
+  const piece = (slot: CaracolCosmeticSlot): CaracolArtItemId[] => {
+    const id = item(slot);
+    return id ? [id] : [];
+  };
+  if (wearer === 'snail') {
+    return ['body', ...piece('pants'), ...piece('shirt'), 'stalks', ...piece('watch'), 'head', ...piece('cap'), ...piece('glasses')];
+  }
+  // O boné cobre a franja e cada par de óculos desenha os próprios olhos.
+  return [
+    'legs', item('pants') ?? 'pants-default', 'arms', item('shirt') ?? 'shirt-default', ...piece('watch'),
+    'head', ...(item('cap') ? [] : ['fringe' as const]), ...(item('glasses') ? [] : ['eyes' as const]), 'mouth',
+    ...piece('glasses'), ...piece('cap'),
+  ];
 }
