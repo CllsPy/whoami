@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CARACOL_COSMETIC_CATALOG,
   emptyCaracolOutfit,
@@ -8,7 +8,14 @@ import {
   type CaracolStateView,
 } from '../shared/caracol';
 import { caracolArtViewBox } from '../src/caracolArt/model';
-import { CaracolShopDrawer } from '../src/CaracolShop';
+import {
+  CaracolShopDrawer,
+  shopCardHandlers,
+  shopPreview,
+  shopPreviewReducer,
+  type ShopPreviewAction,
+  type ShopPreviewState,
+} from '../src/CaracolShop';
 
 // A loja vive fora de CaracolGame.tsx, que abre o socket no import. Os testes
 // renderizam a gaveta em node com um estado de exemplo.
@@ -55,9 +62,9 @@ function sampleState(overrides: { coins?: number } = {}): CaracolStateView {
   };
 }
 
-function drawer(tab: CaracolCosmeticWearer, state = sampleState()): string {
+function drawer(tab: CaracolCosmeticWearer, state = sampleState(), initialPreview?: ShopPreviewState): string {
   const noop = (): void => undefined;
-  return renderToStaticMarkup(createElement(CaracolShopDrawer, { state, open: true, tab, onTabChange: noop, onClose: noop, onPurchase: noop, onEquip: noop }));
+  return renderToStaticMarkup(createElement(CaracolShopDrawer, { state, open: true, tab, onTabChange: noop, onClose: noop, onPurchase: noop, onEquip: noop, initialPreview }));
 }
 
 function card(markup: string, name: string): string {
@@ -181,5 +188,91 @@ describe('prévia e abas da loja', () => {
       expect(snail).toContain(`viewBox="${caracolArtViewBox('snail', 'portrait')}"`);
       expect(layersOf(snail)).toContain('cap-trucker');
     }
+  });
+});
+
+describe('provador', () => {
+  const equipped = sampleState().shop.player.outfit;
+  const cargo = CARACOL_COSMETIC_CATALOG.find((item) => item.id === 'pants-cargo')!;
+  const jeans = CARACOL_COSMETIC_CATALOG.find((item) => item.id === 'pants-jeans')!;
+  const empty: ShopPreviewState = { trying: null, pinned: false };
+  const run = (actions: ShopPreviewAction[], from = empty): ShopPreviewState => actions.reduce(shopPreviewReducer, from);
+
+  it('veste a peça em prova no slot dela e diz Provando (LOJA-08)', () => {
+    const state = run([{ type: 'try', itemId: 'pants-cargo' }]);
+    expect(state.trying).toBe('pants-cargo');
+    expect(shopPreview(equipped, cargo)).toEqual({ outfit: { ...equipped, pants: 'pants-cargo' }, label: 'Provando' });
+  });
+
+  it('diz Provando mesmo quando a peça em prova já é a equipada', () => {
+    expect(shopPreview(equipped, jeans)).toEqual({ outfit: equipped, label: 'Provando' });
+  });
+
+  it('volta ao visual equipado quando o ponteiro ou o foco sai (LOJA-09)', () => {
+    expect(run([{ type: 'try', itemId: 'pants-cargo' }, { type: 'leave' }]).trying).toBeNull();
+    expect(shopPreview(equipped, null)).toEqual({ outfit: equipped, label: 'Visual atual' });
+  });
+
+  it('descarta a prova ao trocar de aba, fixada ou não (LOJA-10)', () => {
+    expect(run([{ type: 'try', itemId: 'pants-cargo' }, { type: 'tab' }])).toEqual(empty);
+    expect(run([{ type: 'toggle', itemId: 'pants-cargo' }, { type: 'tab' }])).toEqual(empty);
+  });
+
+  it('prova pelo botão do medalhão e desfaz ao acionar de novo (LOJA-12)', () => {
+    const on = run([{ type: 'toggle', itemId: 'pants-cargo' }]);
+    expect(on).toEqual({ trying: 'pants-cargo', pinned: true });
+    expect(run([{ type: 'toggle', itemId: 'pants-cargo' }], on)).toEqual(empty);
+  });
+
+  it('acionar o botão depois do hover prova a peça em vez de desfazer (LOJA-12)', () => {
+    // No toque, o navegador emula mouseenter e foco antes do clique: o gesto chega como try + toggle.
+    expect(run([{ type: 'try', itemId: 'pants-cargo' }, { type: 'toggle', itemId: 'pants-cargo' }])).toEqual({ trying: 'pants-cargo', pinned: true });
+    expect(run([{ type: 'try', itemId: 'pants-cargo' }, { type: 'toggle', itemId: 'pants-cargo' }, { type: 'toggle', itemId: 'pants-cargo' }])).toEqual(empty);
+  });
+
+  it('mantém a prova fixada pelo botão quando o ponteiro passa por outros cards', () => {
+    const pinned = run([{ type: 'toggle', itemId: 'pants-cargo' }]);
+    expect(run([{ type: 'leave' }, { type: 'try', itemId: 'cap-flat' }, { type: 'leave' }], pinned)).toEqual(pinned);
+  });
+
+  it('só despacha para o provador, sem comprar nem equipar (LOJA-11)', () => {
+    const dispatch = vi.fn();
+    const onPurchase = vi.fn();
+    const onEquip = vi.fn();
+    const handlers = shopCardHandlers(dispatch, 'pants-cargo');
+    handlers.onMouseEnter();
+    handlers.onFocus();
+    handlers.onClick();
+    handlers.onBlur();
+    handlers.onMouseLeave();
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: 'try', itemId: 'pants-cargo' },
+      { type: 'try', itemId: 'pants-cargo' },
+      { type: 'toggle', itemId: 'pants-cargo' },
+      { type: 'leave' },
+      { type: 'leave' },
+    ]);
+    expect(run(dispatch.mock.calls.map(([action]) => action as ShopPreviewAction))).toEqual({ trying: 'pants-cargo', pinned: true });
+    expect(onPurchase).not.toHaveBeenCalled();
+    expect(onEquip).not.toHaveBeenCalled();
+  });
+
+  it('põe em cada card um botão Provar com aria-pressed (LOJA-12)', () => {
+    const markup = drawer('player');
+    for (const item of CARACOL_COSMETIC_CATALOG) {
+      expect(card(markup, item.name), item.id).toContain(`<button type="button" class="caracol-shop-try" aria-pressed="false" aria-label="Provar ${item.name}">`);
+    }
+    const trying = drawer('player', sampleState(), { trying: 'pants-cargo', pinned: true });
+    expect(card(trying, 'Cargo')).toContain('aria-pressed="true" aria-label="Provar Cargo"');
+    expect(card(trying, 'Jeans')).toContain('aria-pressed="false" aria-label="Provar Jeans"');
+  });
+
+  it('mostra o visual atual quando abre e a peça provada na prévia durante a prova (LOJA-08)', () => {
+    const idle = section(drawer('player'), 'caracol-shop-preview', 'caracol-shop-body');
+    expect(idle).toContain('<span class="micro-label">Visual atual</span>');
+    const trying = section(drawer('player', sampleState(), { trying: 'pants-cargo', pinned: false }), 'caracol-shop-preview', 'caracol-shop-body');
+    expect(trying).toContain('<span class="micro-label">Provando</span>');
+    expect(layersOf(trying).filter((layer) => layer === 'pants-cargo')).toHaveLength(2);
+    expect(layersOf(trying)).not.toContain('pants-jeans');
   });
 });

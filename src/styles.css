@@ -935,6 +935,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .caracol-avatar-badge.badge-check { top: -6%; }
 .caracol-avatar-badge.badge-skull { bottom: -6%; }
 .caracol-shop-preview-full .caracol-figure { display: block; width: auto; height: 176px; }
+.caracol-shop-try { display: grid; border: 0; border-radius: 50%; padding: 0; place-items: center; background: transparent; }
+.caracol-shop-preview .micro-label { color: var(--muted-dark); }
+.caracol-shop-preview.is-trying .micro-label { color: var(--coral); }
 
 .map-player-halo { fill: var(--sky); stroke: var(--night); stroke-width: 2; }
 .map-player-you .map-player-halo { fill: var(--acid); }
