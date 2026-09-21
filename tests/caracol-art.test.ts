@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CARACOL_COSMETIC_CATALOG, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
+import { CARACOL_COSMETIC_CATALOG, CARACOL_COSMETIC_SLOTS, emptyCaracolOutfit, type CaracolOutfit } from '../shared/caracol';
 import {
   CARACOL_ART_ITEM_IDS,
   CARACOL_ART_PALETTE,
+  CARACOL_INK_MIN_PX,
   caracolArtLayers,
   caracolArtViewBox,
+  caracolPlayerTone,
+  caracolShopItemTone,
+  sameCaracolOutfit,
   type CaracolArtCrop,
 } from '../src/caracolArt/model';
 
@@ -122,5 +126,55 @@ describe('camadas visíveis', () => {
     const unknown: CaracolOutfit = { pants: 'pants-skirt', shirt: 'shirt-hawaii', watch: 'watch-smart', glasses: 'glasses-3d', cap: 'cap-beanie' };
     expect(caracolArtLayers('player', unknown)).toEqual(['legs', 'pants-default', 'arms', 'shirt-default', 'head', 'fringe', 'eyes', 'mouth']);
     expect(caracolArtLayers('snail', unknown)).toEqual(['body', 'stalks', 'head']);
+  });
+});
+
+describe('tons do medalhão', () => {
+  it('segue a prioridade morta > alvo > você > padrão nas 8 combinações (LISTA-01, LISTA-02, LISTA-04)', () => {
+    const cases = [
+      [{ isYou: false, isTarget: false, alive: true }, 'default'],
+      [{ isYou: true, isTarget: false, alive: true }, 'you'],
+      [{ isYou: false, isTarget: true, alive: true }, 'target'],
+      [{ isYou: true, isTarget: true, alive: true }, 'target'],
+      [{ isYou: false, isTarget: false, alive: false }, 'dead'],
+      [{ isYou: true, isTarget: false, alive: false }, 'dead'],
+      [{ isYou: false, isTarget: true, alive: false }, 'dead'],
+      [{ isYou: true, isTarget: true, alive: false }, 'dead'],
+    ] as const;
+    for (const [input, tone] of cases) {
+      expect(caracolPlayerTone(input), JSON.stringify(input)).toBe(tone);
+    }
+  });
+
+  it('marca a peça equipada como equipped, mesmo sem saldo (LOJA-02)', () => {
+    expect(caracolShopItemTone({ owned: true, equipped: true, coins: 0, price: 100 })).toBe('equipped');
+  });
+
+  it('marca a peça não comprada acima do saldo como unaffordable (LOJA-03)', () => {
+    expect(caracolShopItemTone({ owned: false, equipped: false, coins: 49, price: 50 })).toBe('unaffordable');
+  });
+
+  it('usa o tom padrão com saldo exato e para peça comprada fora de uso (LOJA-04)', () => {
+    expect(caracolShopItemTone({ owned: false, equipped: false, coins: 50, price: 50 })).toBe('default');
+    expect(caracolShopItemTone({ owned: true, equipped: false, coins: 0, price: 50 })).toBe('default');
+  });
+});
+
+describe('comparação de outfit', () => {
+  const outfit: CaracolOutfit = { pants: 'pants-jeans', shirt: null, watch: 'watch-gold', glasses: null, cap: 'cap-flat' };
+
+  it('considera iguais dois objetos novos com os mesmos valores (ARTE-13)', () => {
+    expect(sameCaracolOutfit(outfit, { ...outfit })).toBe(true);
+  });
+
+  it('considera diferentes quando qualquer um dos slots muda (ARTE-13)', () => {
+    for (const slot of CARACOL_COSMETIC_SLOTS) {
+      const other = { ...outfit, [slot]: outfit[slot] === null ? 'x' : null };
+      expect(sameCaracolOutfit(outfit, other), slot).toBe(false);
+    }
+  });
+
+  it('liga a tinta a partir de 56 px', () => {
+    expect(CARACOL_INK_MIN_PX).toBe(56);
   });
 });

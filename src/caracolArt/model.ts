@@ -1,4 +1,4 @@
-import type { CaracolCosmeticSlot, CaracolCosmeticWearer, CaracolOutfit } from '../../shared/caracol';
+import { CARACOL_COSMETIC_SLOTS, type CaracolCosmeticSlot, type CaracolCosmeticWearer, type CaracolOutfit } from '../../shared/caracol';
 
 // Modelo da arte do Caracol: tudo que é dado e regra, sem JSX. Cada personagem
 // é desenhado uma vez em coordenadas fixas (jogador em 200 × 400, caracol em
@@ -60,6 +60,10 @@ export type PlayerArtLayer =
   | CaracolArtItemId;
 export type SnailArtLayer = 'body' | 'stalks' | 'head' | CaracolArtItemId;
 export type CaracolArtLayer = PlayerArtLayer | SnailArtLayer;
+export type CaracolMedallionTone = 'default' | 'you' | 'target' | 'dead' | 'equipped' | 'unaffordable';
+
+/** Abaixo disso o tremido da tinta só borra o traço, e o filtro custaria em cada token do mapa. */
+export const CARACOL_INK_MIN_PX = 56;
 
 export const CARACOL_ART_CROPS: Record<CaracolCosmeticWearer, Record<CaracolArtCrop, CaracolArtBox>> = {
   player: {
@@ -111,4 +115,23 @@ export function caracolArtLayers(wearer: CaracolCosmeticWearer, outfit: CaracolO
     'head', ...(item('cap') ? [] : ['fringe' as const]), ...(item('glasses') ? [] : ['eyes' as const]), 'mouth',
     ...piece('glasses'), ...piece('cap'),
   ];
+}
+
+/** Morte é o fato mais forte, alvo é perigo imediato, e "você" já tem a faixa ácida na linha. */
+export function caracolPlayerTone({ isYou, isTarget, alive }: { isYou: boolean; isTarget: boolean; alive: boolean }): CaracolMedallionTone {
+  if (!alive) return 'dead';
+  if (isTarget) return 'target';
+  return isYou ? 'you' : 'default';
+}
+
+/** `price` já chega do servidor com Moeda e Raio aplicados. */
+export function caracolShopItemTone({ owned, equipped, coins, price }: { owned: boolean; equipped: boolean; coins: number; price: number }): CaracolMedallionTone {
+  if (equipped) return 'equipped';
+  if (!owned && coins < price) return 'unaffordable';
+  return 'default';
+}
+
+/** O estado chega a cada segundo com outfits em objetos novos: comparar por valor evita redesenhar o avatar. */
+export function sameCaracolOutfit(a: CaracolOutfit, b: CaracolOutfit): boolean {
+  return CARACOL_COSMETIC_SLOTS.every((slot) => a[slot] === b[slot]);
 }
