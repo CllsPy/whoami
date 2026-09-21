@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import type { CaracolPlayerView } from '../shared/caracol';
 import { CaracolMedallion } from './CaracolAvatar';
+import { caracolPlayerTone } from './caracolArt/model';
 import { PlayerEffects } from './CaracolRoulette';
 
 // O cartão "No mapa" fica fora de CaracolGame.tsx, que abre o socket no import,
@@ -20,9 +21,14 @@ export function CaracolPlayersCard({ players, targetAccountId }: CaracolPlayersC
     <div className="caracol-player-list">{players.map((player) => {
       const isTarget = player.accountId === targetAccountId;
       return <div className={`caracol-player-row ${player.isYou ? 'is-you' : ''} ${player.alive ? '' : 'is-dead'} ${isTarget ? 'is-target' : ''}`} key={player.accountId}>
-        {player.alive
-          ? <CaracolMedallion wearer="player" outfit={player.outfit} size={40} label={`${player.nickname} vestido`} />
-          : <span className="caracol-skull" role="img" aria-label={`${player.nickname} morta`}>☠</span>}
+        {/* Filho direto da linha: `.caracol-player-row div span` pegaria um medalhão dentro do texto. */}
+        <CaracolMedallion
+          wearer="player"
+          outfit={player.outfit}
+          size={40}
+          tone={caracolPlayerTone({ isYou: player.isYou, isTarget, alive: player.alive })}
+          label={player.alive ? `${player.nickname} vestido` : `${player.nickname} morta`}
+        />
         <div>
           <strong>{player.nickname}{player.isYou ? <small> você</small> : null}</strong>
           <span>{player.alive ? `${player.city.name} · ${player.city.uf}` : `morta · ${player.city.name} · ${player.city.uf}`}</span>

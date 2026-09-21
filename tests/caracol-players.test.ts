@@ -64,3 +64,35 @@ describe('cartão de jogadores', () => {
     for (const nickname of ['Ana', 'Bia', 'Duda']) expect(row(markup, nickname)).not.toContain('dead-badge');
   });
 });
+
+describe('tons na lista', () => {
+  function tone(markup: string, nickname: string): string | undefined {
+    return /class="caracol-medallion tone-([\w-]+)"/.exec(row(markup, nickname))?.[1];
+  }
+
+  it('dá o tom you à sua linha e target à do alvo (LISTA-01, LISTA-02)', () => {
+    const markup = card(players, 'id-Bia');
+    expect(tone(markup, 'Ana')).toBe('you');
+    expect(tone(markup, 'Bia')).toBe('target');
+    expect(tone(markup, 'Duda')).toBe('default');
+  });
+
+  it('mostra quem morreu pelo retrato em cinza, sem o glifo de caveira (LISTA-03)', () => {
+    const markup = card(players, 'id-Bia');
+    expect(tone(markup, 'Caio')).toBe('dead');
+    expect(row(markup, 'Caio')).toContain('role="img" aria-label="Caio morta"');
+    expect(markup).not.toContain('☠');
+  });
+
+  it('segue morta > alvo > você quando a linha acumula estados (LISTA-04)', () => {
+    expect(tone(card(players, 'id-Ana'), 'Ana')).toBe('target');
+    expect(tone(card(players, 'id-Caio'), 'Caio')).toBe('dead');
+  });
+
+  it('põe o medalhão como filho direto da linha, fora do div de texto', () => {
+    const markup = card(players, 'id-Bia');
+    for (const nickname of ['Ana', 'Bia', 'Caio', 'Duda']) {
+      expect(row(markup, nickname), nickname).toMatch(/^[^>]*><span class="caracol-avatar"/);
+    }
+  });
+});
