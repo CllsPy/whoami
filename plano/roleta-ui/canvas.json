@@ -1,0 +1,23 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-09-20T23:05:00Z" },
+  "title": "Roleta do Caracol",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html":          { "x": 0,    "y": 0,    "w": 1280, "h": 880, "title": "No lugar, na tela do jogo" },
+    "Estados.dc.html":       { "x": 0,    "y": 1180, "w": 1400, "h": 720, "title": "Os quatro estados" },
+    "Revela-buff.dc.html":   { "x": 0,    "y": 2180, "w": 1280, "h": 860, "title": "Takeover - buff" },
+    "Revela-debuff.dc.html": { "x": 1360, "y": 2180, "w": 1280, "h": 860, "title": "Takeover - debuff" },
+    "Itens.dc.html":         { "x": 0,    "y": 3320, "w": 1280, "h": 840, "title": "Os 13 simbolos" },
+    "Mobile.dc.html":        { "x": 1360, "y": 3320, "w": 390,  "h": 844, "title": "Mobile 390" }
+  },
+  "order": ["Main.dc.html", "Estados.dc.html", "Revela-buff.dc.html", "Revela-debuff.dc.html", "Itens.dc.html", "Mobile.dc.html"],
+  "notes": {
+    "n1": { "x": 0, "y": -260, "text": "Onde o cartao vive", "kind": "title1", "maxW": 1280 },
+    "n2": { "x": 0, "y": 920,  "text": "Estados", "kind": "title1", "maxW": 1400 },
+    "n3": { "x": 0, "y": 1920, "text": "O momento do dia", "kind": "title1", "maxW": 2640 },
+    "n4": { "x": 0, "y": 3060, "text": "Os itens e o telefone", "kind": "title1", "maxW": 1750 }
+  },
+  "designSystems": []
+}
