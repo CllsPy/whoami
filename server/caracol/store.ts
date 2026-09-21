@@ -6,7 +6,6 @@ import {
   type CaracolEffectScope,
   type CaracolHistoryEntry,
   type CaracolHistoryType,
-  type CaracolCosmeticWearer,
   type CaracolOutfit,
   type CaracolRouletteItemId,
 } from '../../shared/caracol';
@@ -107,7 +106,6 @@ export interface CaracolStore {
   createAccount(input: Omit<CaracolAccountRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<CaracolAccountRecord>;
   saveAccount(account: CaracolAccountRecord): Promise<void>;
   saveWorld(world: CaracolWorldRecord): Promise<void>;
-  saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void>;
   commit(changes: CaracolCommit): Promise<void>;
   appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord>;
   listHistory(input: { beforeId?: string | null; limit: number }): Promise<{
@@ -135,11 +133,11 @@ function initialWorld(now = Date.now()): CaracolWorldRecord {
   };
 }
 
-function cloneAccount(account: CaracolAccountRecord): CaracolAccountRecord {
+export function cloneAccount(account: CaracolAccountRecord): CaracolAccountRecord {
   return { ...account, cosmeticOwnedItemIds: [...account.cosmeticOwnedItemIds], cosmeticOutfit: { ...account.cosmeticOutfit } };
 }
 
-function cloneWorld(world: CaracolWorldRecord): CaracolWorldRecord {
+export function cloneWorld(world: CaracolWorldRecord): CaracolWorldRecord {
   return { ...world, snailCosmeticOwnedItemIds: [...world.snailCosmeticOwnedItemIds], snailCosmeticOutfit: { ...world.snailCosmeticOutfit } };
 }
 
@@ -373,11 +371,6 @@ export class MemoryCaracolStore implements CaracolStore {
     this.world = cloneWorld(world);
   }
 
-  async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
-    await this.saveAccount(account);
-    if (wearer === 'snail') this.world = cloneWorld(world);
-  }
-
   async commit(changes: CaracolCommit): Promise<void> {
     for (const account of changes.accounts ?? []) await this.saveAccount(account);
     if (changes.world) await this.saveWorld(changes.world);
@@ -562,25 +555,6 @@ export class PgCaracolStore implements CaracolStore {
        WHERE id = $1`,
       [WORLD_ID, world.snailLat, world.snailLon, world.speedLevel, world.redirectLevel, world.targetAccountId, world.snailCosmeticOwnedItemIds, JSON.stringify(world.snailCosmeticOutfit), world.lastTickAt],
     );
-  }
-
-  async saveCosmeticState(account: CaracolAccountRecord, world: CaracolWorldRecord, wearer: CaracolCosmeticWearer): Promise<void> {
-    await this.transaction(async (client) => {
-      await client.query(
-        `UPDATE caracol_accounts SET
-          coins = $2, cosmetic_owned_item_ids = $3, cosmetic_outfit = $4, updated_at = NOW()
-         WHERE id = $1`,
-        [account.id, account.coins, account.cosmeticOwnedItemIds, JSON.stringify(account.cosmeticOutfit)],
-      );
-      if (wearer === 'snail') {
-        await client.query(
-          `UPDATE caracol_world SET snail_cosmetic_owned_item_ids = $2,
-            snail_cosmetic_outfit = $3, updated_at = NOW()
-           WHERE id = $1`,
-          [WORLD_ID, world.snailCosmeticOwnedItemIds, JSON.stringify(world.snailCosmeticOutfit)],
-        );
-      }
-    });
   }
 
   async appendHistory(input: Omit<CaracolHistoryRecord, 'id'>): Promise<CaracolHistoryRecord> {

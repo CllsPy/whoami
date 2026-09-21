@@ -228,6 +228,11 @@ function act(player: Player, event: string, ...args: unknown[]): Promise<Caracol
   return player.socket.request<CaracolActionResult>(event, ...args);
 }
 
+/** Resolve com o resultado ou, se a promessa pendurar, com 'pendurou' depois de `ms`. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | 'pendurou'> {
+  return Promise.race([promise, new Promise<'pendurou'>((resolve) => { setTimeout(() => resolve('pendurou'), ms); })]);
+}
+
 function failureCode(result: CaracolActionResult | CaracolRouletteResult): string | null {
   return result.ok ? null : result.code;
 }
@@ -954,7 +959,7 @@ describe('roleta do Caracol: aviso de aproximação de quem se muda', () => {
 describe('roleta do Caracol: gravação antes da memória', () => {
   it('responde com falha e não gasta nada quando a gravação falha', async () => {
     const { store, now } = fresh();
-    const actor = await seedAccount(store, now.value, 'Azarento', SAO_PAULO, { coins: 100 });
+    const actor = await seedAccount(store, now.value, 'Azarento', SAO_PAULO, { coins: 100, cosmeticOwnedItemIds: ['pants-jeans'] });
     await seedAccount(store, now.value, 'Vitima', RIO, { coins: 50 });
     await seedEffect(store, actor.id, 'boomerang', now.value);
     await seedEffect(store, actor.id, 'mushroom', now.value);
@@ -965,26 +970,54 @@ describe('roleta do Caracol: gravação antes da memória', () => {
     expect(before.world.snail.targetNickname).toBe('Azarento');
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const attempts: Array<[string, unknown]> = [
+    const attempts: Array<[string, ...unknown[]]> = [
       ['caracol:boomerang', { targetNickname: 'Vitima' }],
       ['caracol:redirect', { targetNickname: 'Vitima' }],
       ['caracol:select-city', { cityId: MANAUS }],
+      ['caracol:buy-speed'],
+      ['caracol:buy-discount'],
+      ['caracol:shop-purchase', { wearer: 'player', itemId: 'shirt-basic' }],
+      ['caracol:shop-purchase', { wearer: 'snail', itemId: 'shirt-basic' }],
+      ['caracol:shop-equip', { wearer: 'player', slot: 'pants', itemId: 'pants-jeans' }],
     ];
-    for (const [event, payload] of attempts) {
+    for (const [event, ...args] of attempts) {
       store.failNextCommit = true;
-      expect(failureCode(await act(player, event, payload)), event).toBe('SAVE_FAILED');
+      expect(failureCode(await act(player, event, ...args)), event).toBe('SAVE_FAILED');
     }
 
     const after = await sync(player);
     expect(after.you.coins).toBe(100);
     expect(after.you.effects).toEqual(before.you.effects);
     expect(after.you.city?.id).toBe(SAO_PAULO);
+    expect(after.you.speedDiscountLevel).toBe(0);
     expect(after.world.snail.targetNickname).toBe('Azarento');
     expect(after.world.snail.redirectCost).toBe(before.world.snail.redirectCost);
+    expect(after.world.snail.speedLevel).toBe(0);
+    expect(after.shop).toEqual(before.shop);
     expect((await sync(victim)).you.coins).toBe(50);
-    expect((await store.loadSnapshot()).effects).toHaveLength(2);
-    expect(logged).toHaveBeenCalledTimes(3);
+    const persisted = await store.loadSnapshot();
+    expect(persisted.effects).toHaveLength(2);
+    expect(persisted.world.snailCosmeticOwnedItemIds).toEqual([]);
+    expect(persisted.accounts.find((account) => account.id === actor.id)?.cosmeticOwnedItemIds).toEqual(['pants-jeans']);
+    expect(logged).toHaveBeenCalledTimes(attempts.length);
     logged.mockRestore();
+  });
+
+  it('um Push que não responde não segura a fila nem a ação de outro jogador', async () => {
+    const { store, now } = fresh();
+    await seedAccount(store, now.value, 'Alfa', SAO_PAULO, { coins: 1_000 });
+    await seedAccount(store, now.value, 'Beto', RIO);
+    await seedAccount(store, now.value, 'Caio', MANAUS, { coins: 1_000 });
+    const world = await openWorld(store, now);
+    const send = vi.fn(() => new Promise<void>(() => undefined));
+    Object.assign(world.manager, { push: { send, getPublicKey: () => null } });
+    const alfa = await connect(world, 'Alfa');
+    const caio = await connect(world, 'Caio');
+
+    // Beto está offline: o aviso de alvo cai no Push, que nunca responde.
+    expect(await within(act(alfa, 'caracol:redirect', { targetNickname: 'Beto' }), 1_000)).toMatchObject({ ok: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await within(act(caio, 'caracol:buy-speed'), 1_000)).toMatchObject({ ok: true });
   });
 
   it('a Bomba tira o que anunciou mesmo quando o tick paga moedas no meio da gravação', async () => {

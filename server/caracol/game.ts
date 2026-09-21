@@ -53,6 +53,8 @@ import { distanceKm, moveTowards, type GeoPoint } from './geo';
 import {
   CaracolNicknameTakenError,
   caracolEffectId,
+  cloneAccount,
+  cloneWorld,
   createCaracolStore,
   type CaracolAccountRecord,
   type CaracolEffectRecord,
@@ -167,9 +169,11 @@ export class CaracolGameManager {
     socket.on('caracol:resume', (payload, ack) => { void this.afterReady(() => this.resume(socket, payload, ack)); });
     socket.on('caracol:sync', (ack) => { void this.afterReady(() => this.sync(socket, ack)); });
     // Tudo que gasta moeda ou carga passa pela mesma fila. Essas ações conferem
-    // o saldo, gravam (`await`) e só então mudam a memória; fora da fila, dois
-    // cliques rápidos passariam juntos pela conferência e gastariam duas vezes.
-    // O tick fica fora: ele só paga moedas e mata, e o `commitPlan` lida com isso.
+    // o saldo e gravam pelo `commitPlan` (`await`) antes de mudar a memória;
+    // fora da fila, dois cliques rápidos passariam juntos pela conferência e
+    // gastariam duas vezes. O tick fica fora: ele só paga moedas e mata, e o
+    // `commitPlan` lida com isso. Nada aqui dentro pode esperar rede de
+    // terceiros: o Push sai por `notify`, que não segura a fila.
     socket.on('caracol:select-city', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.selectCity(socket, payload, ack))); });
     socket.on('caracol:redirect', (payload, ack) => { void this.afterReady(() => this.enqueueMutation(() => this.redirect(socket, payload, ack))); });
     socket.on('caracol:buy-speed', (ack) => { void this.afterReady(() => this.enqueueMutation(() => this.buySpeed(socket, ack))); });
@@ -436,7 +440,7 @@ export class CaracolGameManager {
       createdAt: this.clock(),
     });
     this.ioNotice('redirected', `O caracol mudou de ideia: agora vai atrás de ${target.nickname}.`);
-    await this.notify(target, 'targeted', `O caracol está indo atrás de você. Alguém pagou para mudar o alvo para ${target.nickname}.`);
+    this.notify(target, 'targeted', `O caracol está indo atrás de você. Alguém pagou para mudar o alvo para ${target.nickname}.`);
     ack({ ok: true, state: this.stateFor(account) });
     this.broadcastState();
   }
@@ -456,9 +460,11 @@ export class CaracolGameManager {
       ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${cost} moedas para levar o caracol a ${nextLevel * 100} km/h.`));
       return;
     }
-    account.coins -= cost;
-    this.world.speedLevel = nextLevel;
-    await Promise.all([this.store.saveAccount(account), this.store.saveWorld(this.world)]);
+    const committed = await this.commitPlan({
+      accounts: [[account, (payer) => { payer.coins = Math.max(0, payer.coins - cost); }]],
+      world: (world) => { world.speedLevel = nextLevel; },
+    }, ack);
+    if (!committed) return;
     await this.recordHistory({
       type: 'speed',
       message: `${account.nickname} acelerou o caracol para ${nextLevel * 100} km/h por ${cost} moedas${account.speedDiscountLevel > 0 ? `, com desconto nível ${account.speedDiscountLevel}` : ''}.`,
@@ -487,9 +493,13 @@ export class CaracolGameManager {
       ack(this.failure('INSUFFICIENT_COINS', `Você precisa de ${cost} moedas para melhorar seu desconto.`));
       return;
     }
-    account.coins -= cost;
-    account.speedDiscountLevel = nextLevel;
-    await this.store.saveAccount(account);
+    const committed = await this.commitPlan({
+      accounts: [[account, (payer) => {
+        payer.coins = Math.max(0, payer.coins - cost);
+        payer.speedDiscountLevel = nextLevel;
+      }]],
+    }, ack);
+    if (!committed) return;
     await this.recordHistory({
       type: 'discount',
       message: `${account.nickname} comprou o desconto do caracol nível ${nextLevel} por ${cost} moedas.`,
@@ -532,11 +542,21 @@ export class CaracolGameManager {
       return;
     }
 
-    account.coins -= price;
-    ownedItemIds.push(item.id);
-    if (wearer === 'player') account.cosmeticOutfit[item.slot] = item.id;
-    else this.world.snailCosmeticOutfit[item.slot] = item.id;
-    await this.store.saveCosmeticState(account, this.world, wearer);
+    const plan: CommitPlan = {
+      accounts: [[account, (payer) => {
+        payer.coins = Math.max(0, payer.coins - price);
+        if (wearer !== 'player') return;
+        payer.cosmeticOwnedItemIds.push(item.id);
+        payer.cosmeticOutfit[item.slot] = item.id;
+      }]],
+    };
+    if (wearer === 'snail') {
+      plan.world = (world) => {
+        world.snailCosmeticOwnedItemIds.push(item.id);
+        world.snailCosmeticOutfit[item.slot] = item.id;
+      };
+    }
+    if (!(await this.commitPlan(plan, ack))) return;
     await this.recordHistory({
       type: 'shop',
       message: `${account.nickname} comprou ${item.name} para ${wearer === 'player' ? 'si' : 'o caracol'} por ${price} moedas.`,
@@ -570,9 +590,10 @@ export class CaracolGameManager {
       }
     }
 
-    if (wearer === 'player') account.cosmeticOutfit[slot] = itemId;
-    else this.world.snailCosmeticOutfit[slot] = itemId;
-    await this.store.saveCosmeticState(account, this.world, wearer);
+    const plan: CommitPlan = wearer === 'player'
+      ? { accounts: [[account, (owner) => { owner.cosmeticOutfit[slot] = itemId; }]] }
+      : { world: (world) => { world.snailCosmeticOutfit[slot] = itemId; } };
+    if (!(await this.commitPlan(plan, ack))) return;
     ack({ ok: true, state: this.stateFor(account) });
     this.broadcastState();
   }
@@ -727,12 +748,16 @@ export class CaracolGameManager {
     failure = this.failure('SAVE_FAILED', 'Não consegui gravar sua ação agora. Nada mudou; tente de novo.'),
   ): Promise<boolean> {
     const accounts = plan.accounts ?? [];
+    // Clones com arrays e roupas próprios: um `push` no rascunho não vaza para a memória.
     const drafts = accounts.map(([account, change]) => {
-      const draft: CaracolAccountRecord = { ...account };
+      const draft = cloneAccount(account);
       change(draft);
       return draft;
     });
-    const world = plan.world ? { ...this.world } : undefined;
+    // A cópia do mundo é de antes do `await`: se o tick gravar o mundo no meio, o
+    // banco pode ficar com o caracol um instante atrás. A memória está certa e o
+    // tick regrava o mundo a cada segundo; só o que o plano muda precisa bater.
+    const world = plan.world ? cloneWorld(this.world) : undefined;
     if (world) plan.world!(world);
     try {
       await this.store.commit({ accounts: drafts, world, upsertEffects: plan.upsertEffects, deleteEffectIds: plan.deleteEffectIds });
@@ -1087,7 +1112,7 @@ export class CaracolGameManager {
           amount: null,
           createdAt: now,
         });
-        await this.notify(next, 'targeted', byLock ? 'O Casco vermelho te marcou: o caracol está indo atrás de você.' : `O caracol despertou e está indo atrás de você.`);
+        this.notify(next, 'targeted', byLock ? 'O Casco vermelho te marcou: o caracol está indo atrás de você.' : `O caracol despertou e está indo atrás de você.`);
       }
     }
     return changed;
@@ -1182,7 +1207,7 @@ export class CaracolGameManager {
       createdAt: now,
     });
     for (const socketId of target.sockets) this.sockets.get(socketId)?.emit('caracol:death', death);
-    await this.notify(target, 'death', death.message);
+    this.notify(target, 'death', death.message);
     this.ioNotice('death', `${target.nickname} foi alcançado pelo caracol.`);
   }
 
@@ -1203,23 +1228,28 @@ export class CaracolGameManager {
         createdAt: this.clock(),
       });
       // O aviso não pode entregar a chegada a quem está com Blooper.
-      await this.notify(target, 'approaching', this.activeEffect(target.id, 'blooper')
+      this.notify(target, 'approaching', this.activeEffect(target.id, 'blooper')
         ? 'O caracol está chegando perto de você.'
         : `O caracol está a caminho e chega em aproximadamente ${this.formatEta(etaMs)}.`);
     }
   }
 
-  private async notify(account: RuntimeAccount, code: 'targeted' | 'approaching' | 'death', message: string): Promise<void> {
+  /**
+   * O aviso por socket sai na hora; o Push é "dispara e esquece". Quem chama
+   * pode estar na fila de mutações ou no tick, e um endpoint lento ou
+   * pendurado não pode segurar a ação de todos os jogadores.
+   */
+  private notify(account: RuntimeAccount, code: 'targeted' | 'approaching' | 'death', message: string): void {
     const payload = { code, message } as const;
     for (const socketId of account.sockets) this.sockets.get(socketId)?.emit('caracol:notice', payload);
     if (account.sockets.size > 0 && account.visibleSockets.size > 0) return;
-    await this.push.send(account.id, Array.from(this.pushSubscriptions.values()), {
+    void this.push.send(account.id, Array.from(this.pushSubscriptions.values()), {
       title: code === 'death' ? 'Caracol: você foi pego' : 'Caracol: atenção',
       body: message,
       tag: `caracol-${code}`,
       url: '/',
       data: payload,
-    });
+    }).catch((error: unknown) => console.warn('[caracol] Push falhou', error));
   }
 
   private ioNotice(code: CaracolNoticePayload['code'], message: string): void {

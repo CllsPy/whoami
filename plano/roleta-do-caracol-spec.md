@@ -232,7 +232,7 @@ Onde esta spec e o design doc divergirem, vale esta spec.
 | Concurrency / ordering | ROL-07 e a premissa de serialização pela fila da loja. |
 | Data lifecycle / expiry | EFX-03 a EFX-06, PER-01 a PER-03. |
 | Observability | ROL-10 grava histórico de todo giro. Falhas seguem o `console.error` existente em `afterReady`. Nada além disso: N/A because o Caracol não tem métricas nem tracing hoje. |
-| External-dependency failure | ROL-11 cobre o PostgreSQL. Push: N/A because a roleta não envia push. |
+| External-dependency failure | ROL-11 cobre o PostgreSQL. Push: a roleta não envia push próprio, mas ações da fila de mutações (redirect, troca de cidade, giro) disparam os avisos existentes de alvo, aproximação e morte. O push sai sem ser esperado e com prazo de 5 s, para que um endpoint lento ou pendurado não trave a fila de todos. |
 | State-transition integrity | ROL-05, EFX-07, EFX-16, EFX-31, EFX-34. |
 
 ---
